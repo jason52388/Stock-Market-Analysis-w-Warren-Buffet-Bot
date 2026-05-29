@@ -108,14 +108,22 @@ def _scrape_view(kind: ViewKind, max_rows: int) -> HedgeFundView:
     soup = BeautifulSoup(resp.text, "lxml")
 
     rows: list[HedgeFundRow] = []
-    for i, cell in enumerate(soup.select("table#grid td"), 1):
-        if i > max_rows:
-            break
+    # dataroma's grid is a matrix with spacer/empty cells interspersed. We must
+    # rank by *valid stock cells only* — using the raw cell ordinal would (a)
+    # leave gaps in `rank` (which feeds the composite rank-bonus) and (b) make
+    # the `max_rows` cutoff stop early after counting empty cells.
+    rank = 0
+    for cell in soup.select("table#grid td"):
         a = cell.find("a")
         tip = cell.find("div")
         if not a or not tip:
-            continue
+            continue  # spacer / non-stock cell — does not consume a rank
         ticker = a.get_text(strip=True)
+        if not ticker:
+            continue
+        rank += 1
+        if rank > max_rows:
+            break
         # Tooltip is the inner div; use whitespace-joined text.
         tooltip = tip.get_text(" ", strip=True)
         name, sector, metric_label, metric_value, hold_price = _parse_tooltip(tooltip)
@@ -126,7 +134,7 @@ def _scrape_view(kind: ViewKind, max_rows: int) -> HedgeFundView:
             metric_label=metric_label,
             metric_value=metric_value,
             hold_price=hold_price,
-            rank=i,
+            rank=rank,
         ))
 
     titles = {
@@ -225,13 +233,15 @@ def _scrape_manager_portfolio(manager_code: str) -> ManagerPortfolio:
                 portfolio_value = _num(val)
 
     positions: list[ManagerPosition] = []
-    for i, tr in enumerate(soup.select("table#grid tbody tr"), 1):
+    rank = 0
+    for tr in soup.select("table#grid tbody tr"):
         cells = tr.find_all("td")
         if len(cells) < 11:
-            continue
+            continue  # header/spacer/total row — does not consume a rank
         stock_a = cells[1].find("a")
         if not stock_a:
             continue
+        rank += 1
         # Ticker is the link text; the trailing <span> holds " - Company Name"
         ticker = (stock_a.contents[0] if stock_a.contents else "").strip()
         span = stock_a.find("span")
@@ -252,7 +262,7 @@ def _scrape_manager_portfolio(manager_code: str) -> ManagerPortfolio:
             value_usd=_num(cells[6].get_text(strip=True)),
             current_price=_num(cells[8].get_text(strip=True)),
             price_change_pct=_num(cells[9].get_text(strip=True)),
-            rank=i,
+            rank=rank,
         ))
 
     return ManagerPortfolio(
@@ -284,7 +294,11 @@ def fetch_hedge_fund_views(cache: Cache, *, max_rows: int = 50) -> dict[ViewKind
     out: dict[ViewKind, HedgeFundView] = {}
     for kind in ("holdings", "buys", "sells"):
         cached = cache.get("dataroma", kind)
-        if cached is not None and len(cached.rows) >= max_rows:
+        # cache.get already enforces the TTL; only successful scrapes are cached
+        # (failures return an uncached empty view). So "has any rows" is the
+        # right freshness signal. The old `len >= max_rows` check re-scraped on
+        # every run whenever a view legitimately held fewer than max_rows names.
+        if cached is not None and cached.rows:
             out[kind] = cached
             continue
         try:

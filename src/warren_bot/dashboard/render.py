@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -165,33 +166,205 @@ def build_kpi_rows(picks: list[Pick]) -> list[dict[str, Any]]:
     return rows
 
 
+AI_DISRUPTION_KEYWORDS = (
+    "ai", "artificial intelligence", "generative ai", "machine learning",
+    "automation", "agentic", "llm", "data center", "accelerator", "gpu",
+    "chip", "cloud", "robotics", "cybersecurity", "copilot"
+)
+
+POSITIVE_AI_TERMS = (
+    "semiconductor", "gpu", "accelerator", "chip", "data center", "cloud",
+    "cybersecurity", "infrastructure", "platform", "software", "automation",
+    "robotics", "analytics", "database", "networking", "consulting",
+    "drug discovery", "diagnostic", "industrial automation"
+)
+
+NEGATIVE_AI_TERMS = (
+    "call center", "customer support", "staffing", "recruiting", "outsourcing",
+    "business process", "back office", "data entry", "content", "advertising",
+    "agency", "publisher", "education", "training", "legal", "tax preparation",
+    "brokerage", "claims processing", "translation", "documentation"
+)
+
+
+def _keyword_hits(text: str, keywords: Iterable[str]) -> list[str]:
+    hay = text.lower()
+    hits: list[str] = []
+    for kw in keywords:
+        kw_l = kw.lower()
+        if len(kw_l) <= 4:
+            if re.search(rf"\b{re.escape(kw_l)}\b", hay):
+                hits.append(kw)
+        elif kw_l in hay:
+            hits.append(kw)
+    return hits
+
+
+def build_ai_disruption_data(
+    picks: list[Pick],
+    stock_news: dict[str, list[NewsItem]] | None = None,
+    briefing: Briefing | None = None,
+) -> dict[str, Any]:
+    """Classify surfaced stocks by likely positive/negative AI disruption.
+
+    This is a transparent heuristic, not a forecast model. It combines business
+    description, sector, score/thesis text, and recent ticker news. The UI shows
+    the exact signals so a reader can agree or disagree quickly.
+    """
+    stock_news = stock_news or {}
+
+    positive: list[dict[str, Any]] = []
+    negative: list[dict[str, Any]] = []
+
+    for p in picks:
+        if p.score.error:
+            continue
+        info = p.snap_info or {}
+        s = p.score
+        desc = _full_description(p)
+        thesis = (p.thesis.summary or "").replace("**", "").replace("_", "")
+        news_items = stock_news.get(s.ticker, [])[:5]
+        news_text = " ".join([n.title + " " + n.summary for n in news_items])
+        hay = " ".join([
+            s.ticker,
+            s.name,
+            s.sector or "",
+            desc,
+            thesis,
+            news_text,
+        ])
+
+        ai_hits = _keyword_hits(hay, AI_DISRUPTION_KEYWORDS)
+        pos_hits = _keyword_hits(hay, POSITIVE_AI_TERMS)
+        neg_hits = _keyword_hits(hay, NEGATIVE_AI_TERMS)
+
+        sector = (s.sector or "").lower()
+        pos_score = len(ai_hits) + len(pos_hits)
+        neg_score = len(ai_hits) + len(neg_hits)
+
+        if "technology" in sector:
+            pos_score += 2
+            pos_hits.append("technology sector")
+        if "communication" in sector and any(k in hay.lower() for k in ("advertising", "content", "media")):
+            neg_score += 2
+            neg_hits.append("content or ad workflow exposure")
+        if "industrials" in sector and any(k in hay.lower() for k in ("automation", "robotics", "industrial")):
+            pos_score += 1
+        if any(k in hay.lower() for k in ("staffing", "outsourcing", "call center", "business process")):
+            neg_score += 3
+
+        matching_news = []
+        for n in news_items:
+            n_text = n.title + " " + n.summary
+            if _keyword_hits(n_text, AI_DISRUPTION_KEYWORDS + POSITIVE_AI_TERMS + NEGATIVE_AI_TERMS):
+                matching_news.append(n)
+        if not matching_news:
+            matching_news = news_items[:2]
+
+        base = {
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector or "Unknown sector",
+            "score": _round(s.total, 1),
+            "price": _round(info.get("regularMarketPrice") or s.valuation.price, 2),
+            "mos": _round(s.valuation.margin_of_safety_pct, 0),
+            "thesis": thesis,
+            "news": [{
+                "title": n.title,
+                "url": n.url,
+                "publisher": n.publisher,
+                "date": n.published_at.strftime("%b %d") if n.published_at else "",
+                "summary": n.summary,
+            } for n in matching_news[:3]],
+        }
+
+        if pos_score >= max(3, neg_score + 1):
+            reasons = list(dict.fromkeys(pos_hits[:4] + ai_hits[:3]))
+            positive.append({
+                **base,
+                "impact": "Positive",
+                "scoreLabel": f"{pos_score} signals",
+                "reasons": reasons or ["AI operating leverage"],
+                "insight": (
+                    "Likely beneficiary because AI raises demand for its tools, "
+                    "infrastructure, automation, or technical services."
+                ),
+                "watch": "Watch for capex intensity, commoditization, and whether AI demand converts into durable margins.",
+            })
+        elif neg_score >= 3:
+            reasons = list(dict.fromkeys(neg_hits[:4] + ai_hits[:3]))
+            negative.append({
+                **base,
+                "impact": "Negative",
+                "scoreLabel": f"{neg_score} signals",
+                "reasons": reasons or ["AI substitution risk"],
+                "insight": (
+                    "Potential pressure point because AI can automate parts of the "
+                    "workflow, compress pricing, or lower barriers for competitors."
+                ),
+                "watch": "Watch pricing power, labor intensity, customer churn, and evidence that the company is using AI defensively.",
+            })
+
+    positive.sort(key=lambda x: (len(x["reasons"]), x["score"] or 0), reverse=True)
+    negative.sort(key=lambda x: (len(x["reasons"]), x["score"] or 0), reverse=True)
+
+    ai_articles = []
+    if briefing:
+        for topic, items in briefing.topic_list:
+            topic_l = topic.lower()
+            for a in items:
+                text = f"{topic} {a.title} {a.summary}"
+                if "ai" in topic_l or _keyword_hits(text, AI_DISRUPTION_KEYWORDS):
+                    ai_articles.append({
+                        "topic": topic,
+                        "title": a.title,
+                        "summary": a.summary,
+                        "source": a.source,
+                        "date": a.display_date,
+                        "url": a.url,
+                    })
+    return {
+        "positive": positive[:50],
+        "negative": negative[:50],
+        "articles": ai_articles[:8],
+    }
+
+
 _TEMPLATE = r"""
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Buffett Bot — {{ date }}</title>
+<title>Yalman Stock Market Analyzer — {{ date }}</title>
 <style>
 :root {
-  --bg: #fafaf7; --card: #ffffff; --ink: #1a1a1a; --muted: #6a6a6a;
-  --line: #e5e3dc; --hit: #1f8f4a; --hit-bg: #e7f4ec;
-  --marg: #c69400; --marg-bg: #fdf5d8;
-  --miss: #c0392b; --miss-bg: #fce8e6;
-  --na: #999; --na-bg: #f3f3f3;
-  --accent: #1a1a1a;
+  --bg: #f7f9fb; --card: #ffffff; --ink: #111827; --muted: #64748b;
+  --line: #e2e8f0; --line-soft: #eef2f7; --hit: #148044; --hit-bg: #e8f7ef;
+  --marg: #a66a00; --marg-bg: #fff6db;
+  --miss: #b42318; --miss-bg: #fff0ee;
+  --na: #94a3b8; --na-bg: #f1f5f9;
+  --accent: #0f172a; --accent-soft: #e8eefc;
+  --focus: #2563eb; --shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       background: var(--bg); color: var(--ink); }
-.wrap { max-width: 980px; margin: 0 auto; padding: 20px 18px 60px; }
-header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
-header h1 { margin: 0; font-size: 22px; }
-header .sub { color: var(--muted); font-size: 13px; }
+       background: linear-gradient(180deg, #ffffff 0, var(--bg) 260px); color: var(--ink); }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
+header { display: grid; grid-template-columns: 1fr auto; gap: 12px 18px; align-items: start; }
+header .brand { min-width: 0; }
+header h1 { margin: 0; font-size: 26px; line-height: 1.1; letter-spacing: 0; }
+header .sub { color: var(--muted); font-size: 13px; margin-top: 7px; }
+header .archive-link { margin-left: auto; align-self: center; font-size: 13px;
+                       color: var(--muted); text-decoration: none; white-space: nowrap;
+                       border: 1px solid var(--line); padding: 7px 12px; border-radius: 7px;
+                       background: rgba(255,255,255,.8); }
+header .archive-link:hover { color: var(--ink); border-color: #cbd5e1; background: #fff; }
 
-.tabs { display: flex; gap: 4px; margin: 18px 0 0; border-bottom: 2px solid var(--line); }
-.tab-btn { background: none; border: none; padding: 10px 16px; font-size: 14px;
+.tabs { display: flex; gap: 6px; margin: 22px 0 0; border-bottom: 1px solid var(--line); }
+.tab-btn { background: none; border: none; padding: 10px 14px; font-size: 14px;
            font-weight: 600; color: var(--muted); cursor: pointer;
-           border-bottom: 3px solid transparent; margin-bottom: -2px; }
-.tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
+           border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 7px 7px 0 0; }
+.tab-btn:hover { color: var(--ink); background: rgba(255,255,255,.72); }
+.tab-btn.active { color: var(--ink); border-bottom-color: var(--focus); background: #fff; }
 .tab { display: none; padding-top: 16px; }
 .tab.active { display: block; }
 
@@ -205,15 +378,22 @@ header .sub { color: var(--muted); font-size: 13px; }
 .sub-tab-panel { display: none; padding-top: 16px; }
 .sub-tab-panel.active { display: block; }
 
-.controls { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-            padding: 12px 14px; margin-bottom: 14px;
+.controls { background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 8px;
+            padding: 10px 12px; margin-bottom: 14px;
             display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 16px; }
+.tab.active > .controls, .sub-tab-panel.active > .controls {
+  position: sticky; top: 0; z-index: 5; backdrop-filter: blur(12px);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+}
 .control label { display: block; font-size: 11px; color: var(--muted);
                  text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
 .control input[type="range"] { width: 100%; }
 .control select, .control input[type="text"] { width: 100%; padding: 6px 8px; font-size: 13px;
                                                 border: 1px solid var(--line); border-radius: 6px;
                                                 background: #fff; }
+.control select:focus, .control input[type="text"]:focus {
+  outline: 2px solid var(--accent-soft); border-color: #93c5fd;
+}
 .control .val { font-weight: 600; font-size: 13px; }
 
 .section-head { margin: 22px 0 8px; font-size: 14px; color: var(--muted);
@@ -221,22 +401,26 @@ header .sub { color: var(--muted); font-size: 13px; }
                 border-top: 1px solid var(--line); padding-top: 12px; }
 .section-head .count { color: var(--ink); }
 
-.pick { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+.pick { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
         padding: 14px 16px; margin: 10px 0; }
+.pick:hover, .rec:hover, .brief-topic:hover, .cockpit-lower .panel:hover,
+.cockpit-ring .panel:hover, .hf-section:hover, .brk-summary:hover {
+  border-color: #cbd5e1; box-shadow: var(--shadow);
+}
 .pick.hidden { display: none; }
 .pick-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ticker { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-weight: 700; font-size: 16px; }
 .name { color: var(--muted); font-size: 14px; }
-.score-pill { margin-left: auto; background: #f2f1ec; border-radius: 999px;
+.score-pill { margin-left: auto; background: var(--na-bg); border-radius: 999px;
               padding: 4px 12px; font-weight: 700; font-size: 13px; }
 .score-pill.strong { background: var(--hit-bg); color: var(--hit); }
 .score-pill.angle { background: var(--marg-bg); color: var(--marg); }
 .score-pill.partial { background: #efeee8; color: #6a6a6a; }
 .facts { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .facts span { margin-right: 10px; }
-.descr { font-size: 13px; line-height: 1.55; color: #333; margin-top: 10px;
-         background: #f7f6f1; border-radius: 8px; padding: 9px 12px; }
+.descr { font-size: 13px; line-height: 1.55; color: #334155; margin-top: 10px;
+         background: #f8fafc; border-radius: 7px; padding: 9px 12px; }
 .descr .more { color: var(--muted); cursor: pointer; font-weight: 600;
                font-size: 12px; margin-left: 4px; }
 .descr .more:hover { color: var(--ink); }
@@ -246,7 +430,7 @@ header .sub { color: var(--muted); font-size: 13px; }
 
 .dim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 6px; margin-top: 10px; }
-.dim { background: #f7f6f1; border-radius: 8px; padding: 8px 10px; }
+.dim { background: #f8fafc; border-radius: 7px; padding: 8px 10px; }
 .dim-head { display: flex; justify-content: space-between; font-size: 12px;
             font-weight: 600; margin-bottom: 6px; color: #444; }
 .dim-head .ds { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -282,13 +466,13 @@ header .sub { color: var(--muted); font-size: 13px; }
                 cursor: pointer; border-radius: 6px 6px 0 0;
                 border-bottom: 2px solid transparent; }
 .card-tab-btn:hover { color: var(--ink); }
-.card-tab-btn.active { color: var(--ink); border-bottom-color: var(--accent);
-                       background: #f7f6f1; }
+.card-tab-btn.active { color: var(--ink); border-bottom-color: var(--focus);
+                       background: #f8fafc; }
 .card-tab-content { display: none; padding: 12px 4px 2px; }
 .card-tab-content.active { display: block; }
 
 /* Briefing */
-.brief-topic { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+.brief-topic { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
                padding: 14px 16px; margin: 12px 0; }
 .brief-topic h3 { margin: 0 0 8px; font-size: 16px; }
 .brief-topic .topic-meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
@@ -303,12 +487,12 @@ header .sub { color: var(--muted); font-size: 13px; }
 .article.hidden { display: none; }
 
 /* Recommendations */
-.rec { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+.rec { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
        padding: 14px 16px; margin: 10px 0; display: grid;
-       grid-template-columns: auto 1fr auto; gap: 14px; align-items: start; }
+       grid-template-columns: auto auto 1fr; gap: 12px 16px; align-items: start; }
 .rec.hidden { display: none; }
 .rec .rank { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-             font-size: 22px; font-weight: 700; color: var(--muted); min-width: 40px; }
+             font-size: 22px; font-weight: 700; color: var(--muted); min-width: 40px; line-height: 1; }
 .rec-body .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .rec-body .ticker { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                     font-weight: 700; font-size: 16px; }
@@ -316,14 +500,15 @@ header .sub { color: var(--muted); font-size: 13px; }
 .rec-body .sector { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .rec-reasons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .tag { display: inline-block; border-radius: 999px; padding: 3px 10px;
-       font-size: 11.5px; font-weight: 600; background: #f0eee6; color: #444; }
+       font-size: 11.5px; font-weight: 600; background: #f1f5f9; color: #334155; }
 .tag.quant { background: #eef1f7; color: #2b4a7a; }
 .tag.hold { background: #e7f4ec; color: var(--hit); }
 .tag.buy { background: #d8efe0; color: #0f6b34; }
 .tag.sell { background: #fde7e9; color: var(--miss); }
-.rec .composite { text-align: right; min-width: 90px; }
+.rec .composite { text-align: left; min-width: 72px; padding: 4px 10px 5px;
+                  border: 1px solid var(--line); border-radius: 7px; background: #f8fafc; }
 .rec .composite .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                       font-weight: 700; font-size: 20px; }
+                       font-weight: 700; font-size: 19px; line-height: 1; }
 .rec .composite .lbl { font-size: 10.5px; color: var(--muted);
                        text-transform: uppercase; letter-spacing: .04em; }
 .tier-badge { display: inline-block; border-radius: 5px; padding: 2px 8px;
@@ -336,7 +521,7 @@ header .sub { color: var(--muted); font-size: 13px; }
 .rec-thesis { margin-top: 8px; font-size: 12.5px; color: #444; line-height: 1.5; }
 .rec-thesis em { font-weight: 600; font-style: normal; color: #555; }
 
-.howto { background: #fffdf5; border: 1px solid #ecdfb6; border-radius: 10px;
+.howto { background: #ffffff; border: 1px solid var(--line); border-radius: 8px;
          padding: 0; margin: 14px 0; overflow: hidden; }
 .howto > summary { cursor: pointer; padding: 12px 16px; font-weight: 600;
                    font-size: 13.5px; list-style: none; color: var(--ink);
@@ -365,8 +550,8 @@ header .sub { color: var(--muted); font-size: 13px; }
               cursor: pointer; border-bottom: 3px solid transparent;
               margin-bottom: -1px; }
 .hf-tab-btn:hover { color: var(--ink); }
-.hf-tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
-.hf-section { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+.hf-tab-btn.active { color: var(--ink); border-bottom-color: var(--focus); }
+.hf-section { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
               padding: 14px 16px; margin: 14px 0; display: none; }
 .hf-section.active { display: block; }
 .hf-section h3 { margin: 0 0 4px; font-size: 16px; }
@@ -375,7 +560,7 @@ table.hf { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.hf th, table.hf td { padding: 7px 10px; text-align: left;
                             border-bottom: 1px solid var(--line); }
 table.hf th { font-size: 11px; color: var(--muted); text-transform: uppercase;
-              letter-spacing: .04em; font-weight: 700; background: #faf8f3; }
+              letter-spacing: .04em; font-weight: 700; background: #f8fafc; }
 table.hf td.num { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 table.hf td.ticker { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                      font-weight: 700; width: 80px; }
@@ -392,7 +577,7 @@ footer { color: var(--muted); font-size: 11.5px; margin-top: 30px; text-align: c
 /* Berkshire panel */
 .brk-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
                gap: 12px; background: var(--card); border: 1px solid var(--line);
-               border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+               border-radius: 8px; padding: 14px 16px; margin: 12px 0; }
 .brk-summary .stat .lbl { font-size: 11px; color: var(--muted);
                           text-transform: uppercase; letter-spacing: .04em; }
 .brk-summary .stat .val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -413,20 +598,20 @@ footer { color: var(--muted); font-size: 11.5px; margin-top: 30px; text-align: c
 .kpi-meta { font-size: 12.5px; color: var(--muted); margin: 8px 0 12px;
             line-height: 1.55; }
 .kpi-meta strong { color: var(--ink); }
-.kpi-meta code { background: #f0eee6; padding: 1px 5px; border-radius: 4px;
+.kpi-meta code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                  font-size: 11.5px; color: #2b4a7a; }
 .kpi-fallback td { padding: 14px 12px !important; background: #fffdf5;
                    border-left: 3px solid #d6c889 !important; font-size: 13px; }
 .kpi-fallback a { color: #1a1a1a; font-weight: 600; }
 .kpi-fallback .yf-ticker { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.kpi-wrap { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+.kpi-wrap { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
             padding: 8px 4px; overflow-x: auto; }
 table.kpi { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 1100px; }
 table.kpi th, table.kpi td { padding: 6px 9px; text-align: left;
                               border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.kpi th { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
-               letter-spacing: .04em; font-weight: 700; background: #faf8f3;
+               letter-spacing: .04em; font-weight: 700; background: #f8fafc;
                cursor: pointer; user-select: none; position: sticky; top: 0; }
 table.kpi th .sort-ind { color: var(--ink); margin-left: 3px; font-size: 9px; }
 table.kpi th:hover { background: #f1eee5; }
@@ -448,7 +633,7 @@ table.kpi td.na { color: var(--na); }
 /* ===================== COCKPIT ===================== */
 .cockpit-header { display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
                   align-items: center; background: var(--card); border: 1px solid var(--line);
-                  border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; }
+                  border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; }
 .cockpit-header .picker { display: flex; align-items: center; gap: 8px; }
 .cockpit-header .picker label { font-size: 11px; color: var(--muted);
                                  text-transform: uppercase; letter-spacing: .04em; }
@@ -456,21 +641,21 @@ table.kpi td.na { color: var(--na); }
                           border-radius: 6px; background: #fff; min-width: 280px;
                           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .cockpit-header .ck-name { font-size: 14px; color: var(--muted); }
-.cockpit-header .ck-sector { background: #f0eee6; border-radius: 999px;
+.cockpit-header .ck-sector { background: #f1f5f9; border-radius: 999px;
                               padding: 4px 12px; font-size: 12px; color: #444; }
 .cockpit-header .ck-score { background: var(--hit-bg); color: var(--hit);
                              border-radius: 999px; padding: 6px 14px;
                              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                              font-weight: 700; font-size: 14px; }
 .cockpit-header .ck-score.angle { background: var(--marg-bg); color: var(--marg); }
-.cockpit-header .ck-score.weak { background: #efeee8; color: #6a6a6a; }
+.cockpit-header .ck-score.weak { background: var(--na-bg); color: #64748b; }
 
 /* Circular layout: 3x3 grid, chart in center, 8 KPI panels around it */
 .cockpit-ring { display: grid; grid-template-columns: 1fr 1.4fr 1fr;
-                grid-template-rows: 1fr 1.4fr 1fr; gap: 12px;
-                min-height: 720px; margin-bottom: 18px; }
+                grid-template-rows: auto minmax(360px, auto) auto; gap: 12px;
+                margin-bottom: 18px; }
 .cockpit-ring .panel { background: var(--card); border: 1px solid var(--line);
-                       border-radius: 12px; padding: 12px 14px; position: relative;
+                       border-radius: 8px; padding: 12px 14px; position: relative;
                        display: flex; flex-direction: column; }
 .cockpit-ring .panel .panel-title { font-size: 10.5px; color: var(--muted);
                                      text-transform: uppercase; letter-spacing: .06em;
@@ -479,7 +664,7 @@ table.kpi td.na { color: var(--na); }
 .cockpit-ring .panel .panel-title .clock { background: var(--accent); color: #fff;
                                             border-radius: 999px; font-size: 9px;
                                             padding: 1px 6px; font-weight: 700; }
-.cockpit-ring .panel .kpis { display: grid; gap: 6px; flex: 1; align-content: start; }
+.cockpit-ring .panel .kpis { display: grid; gap: 6px; flex: 1; align-content: center; }
 .ck-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: baseline;
           padding: 4px 0; border-bottom: 1px dotted var(--line); }
 .ck-row:last-child { border-bottom: none; }
@@ -493,10 +678,10 @@ table.kpi td.na { color: var(--na); }
                     display: block; margin-top: 1px; }
 
 /* Center chart pod */
-.cockpit-ring .chart-pod { background: var(--card); border: 2px solid var(--accent);
-                           border-radius: 16px; padding: 8px; position: relative;
+.cockpit-ring .chart-pod { background: var(--card); border: 1px solid #cbd5e1;
+                           border-radius: 10px; padding: 8px; position: relative;
                            display: flex; flex-direction: column;
-                           box-shadow: 0 2px 18px rgba(0,0,0,0.06); }
+                           box-shadow: var(--shadow); }
 .cockpit-ring .chart-pod .ticker-badge { position: absolute; top: -14px; left: 50%;
                                           transform: translateX(-50%);
                                           background: var(--accent); color: #fff;
@@ -505,8 +690,17 @@ table.kpi td.na { color: var(--na); }
                                           font-weight: 700; font-size: 13px; letter-spacing: .04em; }
 .cockpit-ring .chart-pod .chart-mount { flex: 1; min-height: 360px; position: relative;
                                          border-radius: 10px; overflow: hidden;
-                                         background: #fafaf7; }
+                                         background: #f8fafc; }
 .cockpit-ring .chart-pod .chart-mount iframe { border: 0; width: 100%; height: 100%; }
+.tradingview-widget-container { position: absolute; inset: 0; }
+.chart-fallback { position: absolute; inset: 0; display: grid; place-items: center;
+                  text-align: center; padding: 24px; color: var(--muted);
+                  background:
+                    linear-gradient(180deg, rgba(37,99,235,.10), rgba(20,128,68,.05)),
+                    repeating-linear-gradient(0deg, transparent 0, transparent 43px, rgba(100,116,139,.12) 44px),
+                    repeating-linear-gradient(90deg, transparent 0, transparent 63px, rgba(100,116,139,.10) 64px); }
+.chart-fallback .fallback-title { font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+.chart-fallback .fallback-copy { font-size: 12px; max-width: 260px; line-height: 1.45; }
 .cockpit-ring .chart-pod .chart-foot { font-size: 11px; color: var(--muted);
                                         text-align: center; margin-top: 6px; }
 .cockpit-ring .chart-pod .chart-foot a { color: var(--ink); font-weight: 600; }
@@ -525,7 +719,7 @@ table.kpi td.na { color: var(--na); }
 /* Dim bars (Quality panel) */
 .dim-bar { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center;
            font-size: 11px; }
-.dim-bar .bar-track { grid-column: 1 / -1; height: 6px; background: #efeee8;
+.dim-bar .bar-track { grid-column: 1 / -1; height: 6px; background: #e2e8f0;
                        border-radius: 3px; overflow: hidden; margin-top: 2px; }
 .dim-bar .bar-fill { height: 100%; background: var(--hit); }
 .dim-bar .bar-fill.mid { background: var(--marg); }
@@ -539,7 +733,7 @@ table.kpi td.na { color: var(--na); }
 /* Lower panels: thesis / about / news */
 .cockpit-lower { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
 .cockpit-lower .panel { background: var(--card); border: 1px solid var(--line);
-                        border-radius: 12px; padding: 14px 16px; }
+                        border-radius: 8px; padding: 14px 16px; }
 .cockpit-lower h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted);
                     text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
 .cockpit-lower .thesis-body { font-size: 13px; line-height: 1.55; color: #222; }
@@ -550,11 +744,58 @@ table.kpi td.na { color: var(--na); }
                                         border-bottom: 1px solid var(--line); }
 .cockpit-empty { padding: 30px; text-align: center; color: var(--muted); font-style: italic; }
 
+/* AI disruption */
+.disruption-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                      gap: 12px; margin: 0 0 14px; }
+.disruption-stat { background: var(--card); border: 1px solid var(--line);
+                   border-radius: 8px; padding: 12px 14px; }
+.disruption-stat .lbl { font-size: 11px; color: var(--muted);
+                        text-transform: uppercase; letter-spacing: .04em; }
+.disruption-stat .val { margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                        font-weight: 800; font-size: 22px; }
+.disruption-note { background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--focus);
+                   border-radius: 8px; padding: 11px 13px; margin: 0 0 14px;
+                   color: #334155; font-size: 12.5px; line-height: 1.5; }
+.disrupt-card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+                padding: 14px 16px; margin: 10px 0; }
+.disrupt-card:hover { border-color: #cbd5e1; box-shadow: var(--shadow); }
+.disrupt-head { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; }
+.disrupt-title { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.impact-pill { border-radius: 999px; padding: 4px 10px; font-size: 11px;
+               font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.impact-pill.positive { background: var(--hit-bg); color: var(--hit); }
+.impact-pill.negative { background: var(--miss-bg); color: var(--miss); }
+.signal-pill { background: #f8fafc; border: 1px solid var(--line); border-radius: 7px;
+               padding: 5px 9px; text-align: right; min-width: 80px; }
+.signal-pill .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-weight: 800; line-height: 1; }
+.signal-pill .lbl { color: var(--muted); font-size: 10px; text-transform: uppercase;
+                    letter-spacing: .04em; margin-top: 2px; }
+.disrupt-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.disrupt-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 14px; margin-top: 10px; }
+.disrupt-section-title { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                         letter-spacing: .04em; font-weight: 800; margin-bottom: 5px; }
+.disrupt-copy { color: #334155; font-size: 12.5px; line-height: 1.5; }
+.reason-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
+.reason-tags .tag { background: #f8fafc; border: 1px solid var(--line); }
+.disrupt-news .news-item { margin: 0; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.disrupt-news .news-item:last-child { border-bottom: none; }
+.ai-briefing-strip { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+                     padding: 14px 16px; margin-top: 18px; }
+.ai-briefing-strip h3 { margin: 0 0 8px; font-size: 14px; }
+.ai-briefing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.ai-briefing-item { border-top: 1px solid var(--line); padding-top: 8px; }
+.ai-briefing-item a { color: var(--ink); text-decoration: none; font-weight: 700; font-size: 12.5px; }
+.ai-briefing-item a:hover { text-decoration: underline; }
+.ai-briefing-item .meta { color: var(--muted); font-size: 11.5px; margin: 2px 0; }
+.ai-briefing-item .summary { color: #475569; font-size: 12px; line-height: 1.4; }
+
 @media (max-width: 640px) {
   .wrap { padding: 14px 12px 40px; }
-  header { gap: 8px; }
-  header h1 { font-size: 19px; }
+  header { grid-template-columns: 1fr; gap: 10px; }
+  header h1 { font-size: 22px; }
   header .sub { font-size: 12px; }
+  header .archive-link { justify-self: start; margin-left: 0; }
 
   /* Top tabs and inner sub-tabs: scroll horizontally instead of wrapping. */
   .tabs, .hf-tab-bar, .card-tab-bar, .sub-tab-bar {
@@ -575,11 +816,10 @@ table.kpi td.na { color: var(--na); }
   .score-pill { margin-left: 0; }
 
   /* Recommendation cards: collapse 3-col layout, move composite under rank. */
-  .rec { grid-template-columns: auto 1fr; gap: 8px 12px; padding: 12px 14px; }
+  .rec { grid-template-columns: auto auto; gap: 8px 10px; padding: 12px 14px; }
   .rec .rank { font-size: 18px; min-width: 28px; }
-  .rec .composite { grid-column: 1 / -1; text-align: left;
-                    display: flex; align-items: baseline; gap: 6px;
-                    border-top: 1px dashed var(--line); padding-top: 8px; }
+  .rec-body { grid-column: 1 / -1; }
+  .rec .composite { text-align: left; display: flex; align-items: baseline; gap: 6px; }
   .rec .composite .num { font-size: 18px; }
   .rec-body .head { gap: 6px; }
 
@@ -611,15 +851,22 @@ table.kpi td.na { color: var(--na); }
   }
   .cockpit-ring .chart-pod .chart-mount { min-height: 280px; }
   .cockpit-lower { grid-template-columns: 1fr; }
+  .disruption-summary { grid-template-columns: 1fr; }
+  .disrupt-head { grid-template-columns: 1fr; }
+  .signal-pill { text-align: left; width: max-content; }
+  .disrupt-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
 <body><div class="wrap">
 
 <header>
-  <h1>Buffett Bot</h1>
-  <span class="sub">{{ date }} · {{ strong|length }} strong · {{ angles|length }} angles
-       · {{ partial|length }} partial · {{ briefing.total_articles }} briefing articles</span>
+  <div class="brand">
+    <h1>Yalman Stock Market Analyzer</h1>
+    <div class="sub">{{ date }} · {{ strong|length }} strong · {{ angles|length }} angles
+         · {{ partial|length }} partial · {{ briefing.total_articles }} briefing articles</div>
+  </div>
+  <a class="archive-link" href="archive/">Past runs ↗</a>
 </header>
 
 <div class="tabs">
@@ -627,6 +874,7 @@ table.kpi td.na { color: var(--na); }
   <button class="tab-btn" data-target="picks">Buffett picks</button>
   <button class="tab-btn" data-target="hedge">Hedge Funds</button>
   {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
+  {% if ai_disruption.positive or ai_disruption.negative %}<button class="tab-btn" data-target="disruption">AI Disruption</button>{% endif %}
   {% if kpi_rows %}<button class="tab-btn" data-target="kpis">All Stocks</button>{% endif %}
   <button class="tab-btn" data-target="briefing">Weekly Briefing</button>
 </div>
@@ -720,6 +968,10 @@ composite = quant_score<br>
        data-composite="{{ r.composite_score }}"
        data-search="{{ (r.pick.score.ticker + ' ' + r.pick.score.name)|lower }}">
     <div class="rank">#{{ loop.index }}</div>
+    <div class="composite">
+      <div class="num">{{ '%.0f'|format(r.composite_score) }}</div>
+      <div class="lbl">composite</div>
+    </div>
     <div class="rec-body">
       <div class="head">
         <span class="ticker">{{ r.pick.score.ticker }}</span>
@@ -745,10 +997,6 @@ composite = quant_score<br>
       <div class="rec-thesis">
         {{ r.pick.thesis.summary | replace('**','') | replace('_','') | safe }}
       </div>
-    </div>
-    <div class="composite">
-      <div class="num">{{ '%.0f'|format(r.composite_score) }}</div>
-      <div class="lbl">composite</div>
     </div>
   </div>
   {% endfor %}
@@ -1052,6 +1300,117 @@ composite = quant_score<br>
   {% endif %}
 
 </section>
+
+<!-- ===================== AI DISRUPTION TAB ===================== -->
+{% if ai_disruption.positive or ai_disruption.negative %}
+<section id="disruption" class="tab">
+
+  <div class="disruption-summary">
+    <div class="disruption-stat">
+      <div class="lbl">Positive disruption</div>
+      <div class="val">{{ ai_disruption.positive|length }}</div>
+    </div>
+    <div class="disruption-stat">
+      <div class="lbl">Negative disruption</div>
+      <div class="val">{{ ai_disruption.negative|length }}</div>
+    </div>
+    <div class="disruption-stat">
+      <div class="lbl">AI sources</div>
+      <div class="val">{{ ai_disruption.articles|length }}</div>
+    </div>
+  </div>
+
+  <div class="disruption-note">
+    This page is a transparent signal screen, not a prediction engine. It flags stocks whose business descriptions,
+    sectors, theses, or recent news mention AI-sensitive workflows such as chips, cloud, automation, content,
+    support, outsourcing, or analytics. Use it as a due-diligence starting point.
+  </div>
+
+  <div class="sub-tab-bar">
+    <button class="sub-tab-btn active" data-subtab="ai-positive">Positive disruption</button>
+    <button class="sub-tab-btn" data-subtab="ai-negative">Negative disruption</button>
+  </div>
+
+  {% for key, label, rows in [
+      ('ai-positive', 'Positive', ai_disruption.positive),
+      ('ai-negative', 'Negative', ai_disruption.negative)
+  ] %}
+  <div class="sub-tab-panel {{ 'active' if loop.first }}" data-subtab="{{ key }}">
+    {% if rows %}
+      {% for item in rows %}
+      <div class="disrupt-card">
+        <div class="disrupt-head">
+          <div>
+            <div class="disrupt-title">
+              <span class="ticker">{{ item.ticker }}</span>
+              <span class="name">{{ item.name }}</span>
+              <span class="impact-pill {{ item.impact|lower }}">{{ item.impact }}</span>
+            </div>
+            <div class="disrupt-meta">
+              {{ item.sector }}
+              {% if item.price is not none %} · ${{ '%.2f'|format(item.price) }}{% endif %}
+              {% if item.score is not none %} · Buffett score {{ '%.0f'|format(item.score) }}{% endif %}
+              {% if item.mos is not none %} · MoS {{ '%.0f'|format(item.mos) }}%{% endif %}
+            </div>
+          </div>
+          <div class="signal-pill">
+            <div class="num">{{ item.scoreLabel }}</div>
+            <div class="lbl">AI screen</div>
+          </div>
+        </div>
+
+        <div class="disrupt-grid">
+          <div>
+            <div class="disrupt-section-title">Reasoning</div>
+            <div class="disrupt-copy">{{ item.insight }}</div>
+            <div class="reason-tags">
+              {% for r in item.reasons %}
+              <span class="tag">{{ r }}</span>
+              {% endfor %}
+            </div>
+            <div class="disrupt-section-title">What to watch</div>
+            <div class="disrupt-copy">{{ item.watch }}</div>
+          </div>
+          <div class="disrupt-news">
+            <div class="disrupt-section-title">Recent news and evidence</div>
+            {% if item.news %}
+              {% for n in item.news %}
+              <div class="news-item">
+                {% if n.url %}<a href="{{ n.url }}" target="_blank">{{ n.title }}</a>{% else %}<strong>{{ n.title }}</strong>{% endif %}
+                <div class="meta">{{ n.publisher }}{% if n.date %} · {{ n.date }}{% endif %}</div>
+                {% if n.summary %}<div class="sum">{{ n.summary }}</div>{% endif %}
+              </div>
+              {% endfor %}
+            {% else %}
+              <div class="no-content">No recent ticker-level news was fetched for this stock.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No {{ label|lower }} AI disruption signals found in this run.</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% if ai_disruption.articles %}
+  <div class="ai-briefing-strip">
+    <h3>Broader AI context from this week's briefing</h3>
+    <div class="ai-briefing-grid">
+      {% for a in ai_disruption.articles %}
+      <div class="ai-briefing-item">
+        <a href="{{ a.url }}" target="_blank">{{ a.title }}</a>
+        <div class="meta">{{ a.source }}{% if a.date %} · {{ a.date }}{% endif %} · {{ a.topic }}</div>
+        {% if a.summary %}<div class="summary">{{ a.summary }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+</section>
+{% endif %}
 
 <!-- ===================== BRIEFING TAB ===================== -->
 <section id="briefing" class="tab">
@@ -1758,7 +2117,13 @@ composite = quant_score<br>
     function tradingViewWidget(ticker) {
       // Rebuild the widget container from scratch — TradingView's embed script
       // mutates the node, so swapping innerHTML alone leaves stale state.
-      chartMount.innerHTML = '';
+      chartMount.innerHTML =
+        '<div class="chart-fallback">' +
+          '<div>' +
+            '<div class="fallback-title">' + esc(ticker) + ' chart</div>' +
+            '<div class="fallback-copy">Loading the 12-month TradingView chart. If the embed is blocked, use the Yahoo Finance link below.</div>' +
+          '</div>' +
+        '</div>';
       const container = document.createElement('div');
       container.className = 'tradingview-widget-container';
       container.style.height = '100%';
@@ -2067,6 +2432,7 @@ def render_dashboard(
 
     cockpit_data = cockpit_data or []
     cockpit_json_str = json.dumps(cockpit_data, separators=(",", ":")).replace("</", "<\\/")
+    ai_disruption = build_ai_disruption_data(all_picks, stock_news, briefing)
 
     now = datetime.now()
     return template.render(
@@ -2089,6 +2455,7 @@ def render_dashboard(
         kpi_json=Markup(kpi_json_str),
         cockpit_data=cockpit_data,
         cockpit_json=Markup(cockpit_json_str),
+        ai_disruption=ai_disruption,
         cache_ttl_hours=cache_ttl_hours or 168,
         date=now.strftime("%A, %B %d %Y"),
         generated_at=now.strftime("%Y-%m-%d %H:%M"),
