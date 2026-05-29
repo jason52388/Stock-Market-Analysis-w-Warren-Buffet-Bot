@@ -139,19 +139,30 @@ def split_picks(
 
     Partial is the safety-net tier — guarantees the dashboard isn't empty even
     when no stocks clear the higher bars. Anything below partial_match is dropped.
+
+    Data coverage gates tier eligibility: a high score built on only a couple of
+    metrics is a statistical leap, not a strong match. Names with thin coverage
+    are demoted (or dropped) so the top tiers only contain well-evidenced picks.
     """
     thr = settings["score_thresholds"]
     strong_thr = float(thr["strong_match"])
     angle_thr = float(thr["interesting_angle"])
     partial_thr = float(thr.get("partial_match", 45))
+    cov_cfg = settings.get("coverage", {})
+    surface_min = float(cov_cfg.get("min_surface", 0.40))
+    strong_min = float(cov_cfg.get("strong_min", 0.65))
+    angle_min = float(cov_cfg.get("angle_min", 0.55))
     strong, angles, partial = [], [], []
     for p in picks:
         if p.score.error:
             continue
+        cov = getattr(p.score, "data_coverage", 1.0)
+        if cov < surface_min:
+            continue  # too little data to make any claim
         s = p.score.total
-        if s >= strong_thr:
+        if s >= strong_thr and cov >= strong_min:
             strong.append(p)
-        elif s >= angle_thr:
+        elif s >= angle_thr and cov >= angle_min:
             angles.append(p)
         elif s >= partial_thr:
             partial.append(p)

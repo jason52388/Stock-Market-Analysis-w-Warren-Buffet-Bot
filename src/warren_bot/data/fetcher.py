@@ -27,6 +27,7 @@ class TickerSnapshot:
     cashflow: pd.DataFrame | None = None     # annual cashflows
     price_history: pd.DataFrame | None = None
     error: str | None = None
+    price_asof: float | None = None          # epoch secs when price/mcap last refreshed
 
     @property
     def ok(self) -> bool:
@@ -66,9 +67,34 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
     except Exception as e:
         log.debug("history fetch failed for %s: %s", ticker, e)
 
+    snap.price_asof = time.time()
     if snap.income is None or snap.income.empty:
         snap.error = "no financials returned"
     return snap
+
+
+def _refresh_quote(snap: TickerSnapshot) -> bool:
+    """Best-effort refresh of just the fast-moving fields (price + market cap)
+    on an otherwise-valid cached snapshot, so week-old statements don't drag a
+    week-old *price* into the valuation. Returns True if anything was updated."""
+    try:
+        fi = yf.Ticker(snap.ticker).fast_info
+        last = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+        mcap = fi.get("market_cap") if hasattr(fi, "get") else getattr(fi, "market_cap", None)
+    except Exception as e:  # pragma: no cover - network dependent
+        log.debug("quote refresh failed for %s: %s", snap.ticker, e)
+        return False
+    updated = False
+    if last:
+        snap.info["currentPrice"] = float(last)
+        snap.info["regularMarketPrice"] = float(last)
+        updated = True
+    if mcap:
+        snap.info["marketCap"] = float(mcap)
+        updated = True
+    if updated:
+        snap.price_asof = time.time()
+    return updated
 
 
 class Fetcher:
@@ -76,13 +102,23 @@ class Fetcher:
     # the next weekly run gets a fresh shot. Stable errors (legitimate sub-cap
     # tickers, delisted) cache for the normal TTL — no reason to refetch.
     _TRANSIENT_TTL_SECONDS = 60 * 60
+    # Statements are cached for the full TTL, but price/market cap go stale fast.
+    # Refresh just the quote on a cache hit older than this (default 1 day).
+    _PRICE_TTL_SECONDS = 24 * 60 * 60
 
     def __init__(self, cache: Cache, batch_size: int = 25, batch_sleep_sec: float = 2.0,
-                 min_market_cap: float = 0):
+                 min_market_cap: float = 0, price_ttl_seconds: int | None = None):
         self.cache = cache
         self.batch_size = batch_size
         self.batch_sleep_sec = batch_sleep_sec
         self.min_market_cap = min_market_cap
+        self.price_ttl_seconds = (price_ttl_seconds if price_ttl_seconds is not None
+                                  else self._PRICE_TTL_SECONDS)
+
+    def _price_is_stale(self, snap: TickerSnapshot) -> bool:
+        if snap.price_asof is None:
+            return True
+        return (time.time() - snap.price_asof) > self.price_ttl_seconds
 
     @staticmethod
     def _is_transient_error(snap: TickerSnapshot) -> bool:
@@ -110,6 +146,11 @@ class Fetcher:
                     if cached_fresh is None:
                         cached = None  # fall through to re-fetch
                 if cached is not None:
+                    # Statements are still fresh, but refresh the price if it's
+                    # gone stale so the valuation doesn't run on a week-old quote.
+                    if cached.ok and self._price_is_stale(cached):
+                        if _refresh_quote(cached):
+                            self.cache.set("snapshot", ticker, cached)
                     return cached
         try:
             snap = _fetch_ticker(ticker, min_market_cap=self.min_market_cap)

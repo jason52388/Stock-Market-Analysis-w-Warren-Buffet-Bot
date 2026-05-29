@@ -56,6 +56,7 @@ class TickerScore:
     growth: GrowthSet
     valuation: ValuationSet
     error: str | None = None
+    data_coverage: float = 0.0   # fraction of criteria with real (non-na) data
 
     def cells(self) -> list[HeatCell]:
         return [c for d in self.dimensions for c in d.cells]
@@ -178,15 +179,26 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
         crit_cfg["years_profitable"]
     fcf_cfg = {"target": max(1, yrs - 1), "excellent": max(1, yrs)} if yrs else \
         crit_cfg["fcf_positive_years"]
+    yp_cell = _make_cell("years_profitable", f"Profitable yrs (of {yrs or 10})",
+                         float(growth.years_profitable) if yrs else None, yrs_cfg)
+    fcf_cell = _make_cell("fcf_positive_years", f"FCF+ years (of {yrs or 10})",
+                          float(growth.fcf_positive_years) if yrs else None, fcf_cfg)
+    # Consistency needs a long runway to mean anything. The dynamic target above
+    # would otherwise hand a perfect "4/4 profitable" the same score as a proven
+    # 10-year compounder. Damp the count-based cells toward the full target
+    # window (10y) so short histories can't claim full marks on a thin record.
+    hist_factor = min(1.0, yrs / float(crit_cfg["years_profitable"]["excellent"])) if yrs else 0.0
+    for c in (yp_cell, fcf_cell):
+        if c.value is not None:
+            c.score *= hist_factor
+            c.status = _status(c.score, c.value)
     consistency = DimensionScore("Consistency", 0, [
-        _make_cell("years_profitable", f"Profitable yrs (of {yrs or 10})",
-                   float(growth.years_profitable) if yrs else None, yrs_cfg),
+        yp_cell,
         _make_cell("revenue_cagr_pct", "Revenue CAGR", growth.revenue_cagr_pct,
                    crit_cfg["revenue_cagr_pct"], "%"),
         _make_cell("eps_cagr_pct", "EPS/NI CAGR", growth.eps_cagr_pct,
                    crit_cfg["eps_cagr_pct"], "%"),
-        _make_cell("fcf_positive_years", f"FCF+ years (of {yrs or 10})",
-                   float(growth.fcf_positive_years) if yrs else None, fcf_cfg),
+        fcf_cell,
     ])
 
     val_dim = DimensionScore("Valuation / Margin of Safety", 0, [
@@ -209,8 +221,14 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
     ])
 
     dims = [moat, strength, consistency, val_dim, cap_alloc]
+    # Average only the cells we actually have data for. A missing metric used to
+    # count as a hard 0, which made "no data" indistinguishable from "terrible
+    # fundamentals" and silently deflated otherwise-strong names (e.g. a debt-
+    # free company has no interest-coverage figure). 'na' cells are now excluded;
+    # data sparsity is surfaced separately via `data_coverage` below.
     for d in dims:
-        d.score = sum(c.score for c in d.cells) / len(d.cells) if d.cells else 0.0
+        scored = [c.score for c in d.cells if c.status != "na"]
+        d.score = sum(scored) / len(scored) if scored else 0.0
 
     total = (
         weights["moat"] * moat.score
@@ -219,6 +237,10 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
         + weights["valuation"] * val_dim.score
         + weights["capital_allocation"] * cap_alloc.score
     )
+
+    all_cells = [c for d in dims for c in d.cells]
+    scored_cells = [c for c in all_cells if c.status != "na"]
+    coverage = len(scored_cells) / len(all_cells) if all_cells else 0.0
 
     return TickerScore(
         ticker=snap.ticker,
@@ -229,4 +251,5 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
         ratios=ratios,
         growth=growth,
         valuation=valuation,
+        data_coverage=round(coverage, 3),
     )

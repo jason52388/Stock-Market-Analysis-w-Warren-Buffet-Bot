@@ -59,6 +59,7 @@ def build_recommendations(
     hedge_views: dict[ViewKind, HedgeFundView],
     *,
     min_quant_score: float = 60.0,
+    min_data_coverage: float = 0.55,
     only_overlap: bool = False,
 ) -> list[Recommendation]:
     """Build the recommendation list.
@@ -91,6 +92,10 @@ def build_recommendations(
         if p.score.error:
             continue
         if p.score.total < min_quant_score:
+            continue
+        # Don't recommend a name whose score rests on too few data points — a
+        # composite built on incomplete fundamentals is not a confident call.
+        if getattr(p.score, "data_coverage", 1.0) < min_data_coverage:
             continue
 
         ticker = p.score.ticker

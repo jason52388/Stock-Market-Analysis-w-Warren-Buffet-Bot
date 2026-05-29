@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import math
+
 from ..data.fetcher import TickerSnapshot
-from .statement_utils import avg, latest, row, safe_div, series_values
+from .statement_utils import aligned, avg, frame, row
 
 # yfinance line-item aliases. First match wins.
 _REVENUE = ["Total Revenue", "TotalRevenue", "Revenue"]
@@ -60,72 +62,99 @@ class RatioSet:
     current_ratio: float | None
 
 
-def _aligned_series(num: list[float], den: list[float]) -> list[float | None]:
-    """Element-wise ratio, padded so output length matches the longer side."""
-    n = min(len(num), len(den))
-    return [safe_div(num[i], den[i]) for i in range(n)]
+def _total_debt_row(balance):
+    """Total debt row, synthesized from long- + short-term debt when the
+    consolidated 'Total Debt' line is absent. Aligned on dates, not position."""
+    td = row(balance, _TOTAL_DEBT)
+    if td is not None:
+        return td
+    lt = row(balance, _LONG_TERM_DEBT)
+    st = row(balance, _SHORT_TERM_DEBT)
+    f = frame(lt=lt, st=st)
+    if f.empty:
+        return lt if lt is not None else st
+    # Sum what's available per date (a missing leg counts as 0).
+    return f.fillna(0.0).sum(axis=1)
 
 
 def compute_ratios(snap: TickerSnapshot) -> RatioSet:
     income, balance = snap.income, snap.balance
 
-    rev_s = series_values(row(income, _REVENUE))
-    net_s = series_values(row(income, _NET_INCOME))
+    net_row = row(income, _NET_INCOME)
+    rev_row = row(income, _REVENUE)
     gross_row = row(income, _GROSS_PROFIT)
     if gross_row is None:
         cost_row = row(income, _COST_OF_REVENUE)
-        if cost_row is not None and row(income, _REVENUE) is not None:
-            gross_row = row(income, _REVENUE) - cost_row
-    gross_s = series_values(gross_row) if gross_row is not None else []
+        if cost_row is not None and rev_row is not None:
+            gross_row = rev_row - cost_row
+    equity_row = row(balance, _TOTAL_EQUITY)
+    debt_row = _total_debt_row(balance)
+    ebit_row = row(income, _OPERATING_INCOME)
+    tax_row = row(income, _TAX_PROVISION)
+    pretax_row = row(income, _PRETAX_INCOME)
+    int_row = row(income, _INTEREST_EXPENSE)
+    cash_row = row(balance, _CASH)
 
-    equity_s = series_values(row(balance, _TOTAL_EQUITY))
-    total_debt_s = series_values(row(balance, _TOTAL_DEBT))
-    if not total_debt_s:
-        lt = series_values(row(balance, _LONG_TERM_DEBT))
-        st = series_values(row(balance, _SHORT_TERM_DEBT))
-        n = min(len(lt), len(st))
-        total_debt_s = [lt[i] + st[i] for i in range(n)] if n else lt or st
+    # ROE = NI / Equity, paired by fiscal year (date-aligned). Undefined when
+    # equity <= 0 (negative book equity makes the ratio meaningless, not great).
+    roe: list[float | None] = []
+    f = aligned(frame(net=net_row, eq=equity_row), "net", "eq")
+    for r in f.itertuples():
+        roe.append(r.net * 100.0 / r.eq if r.eq and r.eq > 0 else None)
 
-    ebit_s = series_values(row(income, _OPERATING_INCOME))
-    tax_s = series_values(row(income, _TAX_PROVISION))
-    pretax_s = series_values(row(income, _PRETAX_INCOME))
-    int_exp_s = series_values(row(income, _INTEREST_EXPENSE))
+    # Margins, date-aligned to the matching year's revenue.
+    gm: list[float | None] = []
+    f = aligned(frame(gross=gross_row, rev=rev_row), "gross", "rev")
+    for r in f.itertuples():
+        gm.append(r.gross * 100.0 / r.rev if r.rev else None)
+    nm: list[float | None] = []
+    f = aligned(frame(net=net_row, rev=rev_row), "net", "rev")
+    for r in f.itertuples():
+        nm.append(r.net * 100.0 / r.rev if r.rev else None)
 
-    # Series-level ratios (in percent)
-    roe = [
-        safe_div(net_s[i] * 100.0, equity_s[i]) if equity_s[i] and equity_s[i] > 0 else None
-        for i in range(min(len(net_s), len(equity_s)))
-    ]
-    gm = _aligned_series([g * 100.0 for g in gross_s], rev_s)
-    nm = _aligned_series([n_ * 100.0 for n_ in net_s], rev_s)
-
-    # ROIC = NOPAT / (Equity + Total Debt - Cash)
-    cash_s = series_values(row(balance, _CASH))
-    n_align = min(len(ebit_s), len(tax_s), len(pretax_s), len(equity_s), len(total_debt_s))
+    # ROIC = NOPAT / Invested Capital.
+    #   Invested Capital = Equity + Total Debt  (total-capital basis).
+    # We deliberately do NOT subtract cash: subtracting *all* cash blows up or
+    # turns negative for net-cash companies (Apple, Alphabet, ...), which then
+    # silently drop out of the average and bias it. Total-capital ROIC slightly
+    # understates the cash-rich (conservative) but never explodes or flips sign.
     roic: list[float | None] = []
-    for i in range(n_align):
-        eff_tax = safe_div(tax_s[i], pretax_s[i]) if pretax_s[i] else None
-        if eff_tax is None or eff_tax < 0:
-            eff_tax = 0.21  # fall back to US statutory if missing/odd
-        nopat = ebit_s[i] * (1 - eff_tax)
-        cash = cash_s[i] if i < len(cash_s) else 0
-        invested = equity_s[i] + total_debt_s[i] - cash
-        roic.append(safe_div(nopat * 100.0, invested) if invested and invested > 0 else None)
+    f = aligned(frame(ebit=ebit_row, tax=tax_row, pretax=pretax_row,
+                      eq=equity_row, debt=debt_row),
+                require=["ebit", "eq", "debt"])
+    for r in f.itertuples():
+        pretax = getattr(r, "pretax", math.nan)
+        tax = getattr(r, "tax", math.nan)
+        eff_tax = (tax / pretax) if (pretax and not math.isnan(pretax)
+                                     and not math.isnan(tax)) else None
+        if eff_tax is None or eff_tax < 0 or eff_tax > 1:
+            eff_tax = 0.21  # US statutory fallback for missing/nonsensical rates
+        nopat = r.ebit * (1 - eff_tax)
+        invested = r.eq + r.debt
+        roic.append(nopat * 100.0 / invested if invested and invested > 0 else None)
 
-    # Latest balance-sheet ratios. Bind the rows once so `latest()` doesn't
-    # re-execute the row lookup (and its internal sort) twice per ticker.
-    cur_assets_row = row(balance, _CURRENT_ASSETS)
-    cur_liab_row = row(balance, _CURRENT_LIAB)
-    cur_ratio = safe_div(latest(cur_assets_row), latest(cur_liab_row))
+    # --- Latest balance-sheet ratios (most recent year with both legs) ---
+    de = None
+    f = aligned(frame(debt=debt_row, eq=equity_row), "debt", "eq")
+    if not f.empty:
+        last = f.iloc[-1]
+        # Negative/zero equity -> D/E is meaningless; leave as None so it shows
+        # 'n/a' rather than a spuriously "excellent" (negative) ratio.
+        de = (last["debt"] / last["eq"]) if last["eq"] and last["eq"] > 0 else None
 
-    debt_latest = total_debt_s[-1] if total_debt_s else None
-    equity_latest = equity_s[-1] if equity_s else None
-    de = safe_div(debt_latest, equity_latest)
+    cur_ratio = None
+    f = aligned(frame(ca=row(balance, _CURRENT_ASSETS), cl=row(balance, _CURRENT_LIAB)),
+                "ca", "cl")
+    if not f.empty:
+        last = f.iloc[-1]
+        cur_ratio = (last["ca"] / last["cl"]) if last["cl"] else None
 
-    # Interest coverage uses latest EBIT/|Interest|
-    ebit_latest = ebit_s[-1] if ebit_s else None
-    int_latest = abs(int_exp_s[-1]) if int_exp_s else None
-    icov = safe_div(ebit_latest, int_latest) if int_latest else None
+    icov = None
+    f = aligned(frame(ebit=ebit_row, intr=int_row), "ebit", "intr")
+    if not f.empty:
+        last = f.iloc[-1]
+        denom = abs(last["intr"])
+        icov = (last["ebit"] / denom) if denom else None
 
     return RatioSet(
         roe_pct_series=roe,

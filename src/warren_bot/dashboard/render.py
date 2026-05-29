@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from jinja2 import Environment
 
+from ..analysis.statement_utils import dividend_yield_pct
 from ..hedge_funds.dataroma import HedgeFundView, ManagerPortfolio, ViewKind
 from ..news.briefing import Briefing
 from ..news.stock_news import NewsItem
@@ -55,9 +56,10 @@ def build_cockpit_data(
         val = s.valuation
         rat = s.ratios
 
-        div_yld = info.get("dividendYield")
-        if div_yld is not None and div_yld < 1:
-            div_yld = div_yld * 100.0
+        # Normalize via the shared helper (rate-derived when possible) so the
+        # dashboard, valuation, and scorer all agree on dividend yield.
+        _dy = dividend_yield_pct(info)
+        div_yld = _dy if _dy else None
 
         dims = [{"n": d.name, "s": _round(d.score, 0)} for d in s.dimensions]
 
@@ -98,7 +100,7 @@ def build_cockpit_data(
             "roic": _round(rat.roic_pct_avg, 1),
             "gm": _round(rat.gross_margin_pct_avg, 1),
             "nm": _round(rat.net_margin_pct_avg, 1),
-            "om": _round((info.get("operatingMargins") or 0) * 100 if info.get("operatingMargins") else None, 1),
+            "om": _round(info["operatingMargins"] * 100, 1) if info.get("operatingMargins") is not None else None,
             # Balance sheet
             "de": _round(rat.debt_to_equity, 2),
             "cr": _round(rat.current_ratio, 2),
@@ -139,9 +141,10 @@ def build_kpi_rows(picks: list[Pick]) -> list[dict[str, Any]]:
 
         # yfinance returns dividend yield as decimal (0.018) on newer versions
         # and as percent (1.8) on older ones — normalize to percent.
-        div_yld = info.get("dividendYield")
-        if div_yld is not None and div_yld < 1:
-            div_yld = div_yld * 100.0
+        # Normalize via the shared helper (rate-derived when possible) so the
+        # dashboard, valuation, and scorer all agree on dividend yield.
+        _dy = dividend_yield_pct(info)
+        div_yld = _dy if _dy else None
 
         rows.append({
             "t": s.ticker,
@@ -191,6 +194,16 @@ header .sub { color: var(--muted); font-size: 13px; }
 .tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
 .tab { display: none; padding-top: 16px; }
 .tab.active { display: block; }
+
+/* Sub-tabs within a top-level tab (e.g. Picks → Picks / Berkshire Holdings) */
+.sub-tab-bar { display: flex; gap: 2px; margin: 4px 0 0; border-bottom: 1px solid var(--line); }
+.sub-tab-btn { background: none; border: none; padding: 9px 16px; font-size: 13.5px;
+               font-weight: 600; color: var(--muted); cursor: pointer;
+               border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.sub-tab-btn:hover { color: var(--ink); }
+.sub-tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
+.sub-tab-panel { display: none; padding-top: 16px; }
+.sub-tab-panel.active { display: block; }
 
 .controls { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
             padding: 12px 14px; margin-bottom: 14px;
@@ -544,13 +557,13 @@ table.kpi td.na { color: var(--na); }
   header .sub { font-size: 12px; }
 
   /* Top tabs and inner sub-tabs: scroll horizontally instead of wrapping. */
-  .tabs, .hf-tab-bar, .card-tab-bar {
+  .tabs, .hf-tab-bar, .card-tab-bar, .sub-tab-bar {
     flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
   .tabs::-webkit-scrollbar, .hf-tab-bar::-webkit-scrollbar,
-  .card-tab-bar::-webkit-scrollbar { display: none; }
-  .tab-btn, .hf-tab-btn { padding: 10px 12px; font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
+  .card-tab-bar::-webkit-scrollbar, .sub-tab-bar::-webkit-scrollbar { display: none; }
+  .tab-btn, .hf-tab-btn, .sub-tab-btn { padding: 10px 12px; font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
   .card-tab-btn { white-space: nowrap; flex: 0 0 auto; }
 
   /* Filter controls: one column, tighter. */
@@ -611,11 +624,10 @@ table.kpi td.na { color: var(--na); }
 
 <div class="tabs">
   <button class="tab-btn active" data-target="recs">Recommended</button>
-  {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
   <button class="tab-btn" data-target="picks">Buffett picks</button>
-  {% if brk %}<button class="tab-btn" data-target="berkshire">Berkshire</button>{% endif %}
   <button class="tab-btn" data-target="hedge">Hedge Funds</button>
-  {% if kpi_rows %}<button class="tab-btn" data-target="kpis">Market KPIs</button>{% endif %}
+  {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
+  {% if kpi_rows %}<button class="tab-btn" data-target="kpis">All Stocks</button>{% endif %}
   <button class="tab-btn" data-target="briefing">Weekly Briefing</button>
 </div>
 
@@ -855,6 +867,13 @@ composite = quant_score<br>
 <!-- ===================== PICKS TAB ===================== -->
 <section id="picks" class="tab">
 
+  <div class="sub-tab-bar">
+    <button class="sub-tab-btn active" data-subtab="picks-list">Picks</button>
+    {% if brk %}<button class="sub-tab-btn" data-subtab="berkshire-holdings">Berkshire Holdings</button>{% endif %}
+  </div>
+
+  <div class="sub-tab-panel active" data-subtab="picks-list">
+
   <div class="controls">
     <div class="control">
       <label>Min total score: <span class="val" id="vMin">0</span></label>
@@ -929,11 +948,11 @@ composite = quant_score<br>
     {% if not partial %}<div class="empty">No partial matches this run.</div>{% endif %}
   </div>
 
-</section>
+  </div><!-- /picks-list panel -->
 
-<!-- ===================== BERKSHIRE TAB ===================== -->
-{% if brk %}
-<section id="berkshire" class="tab">
+  <!-- ===================== BERKSHIRE HOLDINGS SUB-PANEL ===================== -->
+  {% if brk %}
+  <div class="sub-tab-panel" data-subtab="berkshire-holdings" id="berkshire">
   <div class="brk-summary">
     <div class="stat"><div class="lbl">Manager</div>
       <div class="val" style="font-size: 14px;">{{ brk.manager_name }}</div></div>
@@ -1029,8 +1048,10 @@ composite = quant_score<br>
     Source: <a href="{{ brk_url }}" target="_blank">dataroma.com/m/holdings.php?m=BRK</a> ·
     From 13F filings, updated ~45 days after each quarter end.
   </div>
+  </div><!-- /berkshire-holdings panel -->
+  {% endif %}
+
 </section>
-{% endif %}
 
 <!-- ===================== BRIEFING TAB ===================== -->
 <section id="briefing" class="tab">
@@ -1312,6 +1333,21 @@ composite = quant_score<br>
       document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
       document.getElementById(b.dataset.target).classList.add('active');
+    });
+  });
+
+  // Sub-tabs within a top-level tab (Picks → Picks / Berkshire Holdings).
+  // Scoped per-parent so multiple sub-tab groups don't interfere.
+  document.querySelectorAll('.sub-tab-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      const parent = b.closest('.tab');
+      if (!parent) return;
+      const key = b.dataset.subtab;
+      parent.querySelectorAll('.sub-tab-btn').forEach(x => x.classList.remove('active'));
+      parent.querySelectorAll('.sub-tab-panel').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      const panel = parent.querySelector('.sub-tab-panel[data-subtab="' + key + '"]');
+      if (panel) panel.classList.add('active');
     });
   });
 
@@ -1682,6 +1718,14 @@ composite = quant_score<br>
     const tickerBadge = document.getElementById('ckTickerBadge');
     const chartMount = document.getElementById('ckChartMount');
     const yahooLink = document.getElementById('ckYahooLink');
+    const cockpitSection = document.getElementById('cockpit');
+
+    function esc(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function cockpitVisible() {
+      return cockpitSection && cockpitSection.classList.contains('active');
+    }
 
     function fmtMcapCK(v) {
       if (v == null) return '—';
@@ -1759,8 +1803,11 @@ composite = quant_score<br>
       tickerBadge.textContent = c.t;
       yahooLink.href = 'https://finance.yahoo.com/quote/' + encodeURIComponent(c.t);
 
-      // Chart
-      tradingViewWidget(c.t);
+      // Chart — only build when the Cockpit tab is actually visible. The
+      // TradingView mini-chart needs a sized container to mount; building it
+      // while the section is hidden yields a 0×0 widget that never recovers.
+      // The tab-click handler builds it on first reveal.
+      if (cockpitVisible()) tradingViewWidget(c.t);
 
       // 12 — Price & Size
       document.getElementById('ckPrice').innerHTML =
@@ -1833,9 +1880,10 @@ composite = quant_score<br>
         row('Buys / Sells last qtr',
             '<span class="val">' + (c.buys || 0) + ' / ' + (c.sells || 0) + '</span>');
 
-      // Lower: thesis + about + news
+      // Lower: thesis + about + news. Escape the thesis before substituting
+      // <br> so a stray "<" in company/sector text can't inject markup.
       const thesisHtml = c.thesis
-        ? c.thesis.replace(/\n\n/g, '<br><br>')
+        ? esc(c.thesis).replace(/\n\n/g, '<br><br>')
         : '<span style="color:var(--muted);font-style:italic;">No thesis available.</span>';
       document.getElementById('ckThesis').innerHTML = thesisHtml;
       document.getElementById('ckAbout').textContent = c.about || '';
@@ -1855,18 +1903,21 @@ composite = quant_score<br>
 
     picker.addEventListener('change', () => render(picker.value));
 
-    // Re-render chart when Cockpit tab becomes active (TradingView widget needs
-    // a sized container to mount; if it loads while hidden the mini-chart
-    // collapses to 0×0 and never recovers).
-    document.querySelectorAll('.tab-btn').forEach(b => {
-      if (b.dataset.target === 'cockpit') {
-        b.addEventListener('click', () => {
-          // Reload chart for the current ticker after the tab is visible.
-          setTimeout(() => tradingViewWidget(picker.value), 50);
-        });
-      }
+    // Build the chart when the Cockpit tab first becomes visible. render()
+    // intentionally skips the chart while the section is hidden (a TradingView
+    // mini-chart mounted in a 0×0 container never recovers), so this is the
+    // only place the initial chart gets built. Guard against rebuilding if the
+    // user re-clicks the already-active tab.
+    document.querySelectorAll('.tab-btn[data-target="cockpit"]').forEach(b => {
+      b.addEventListener('click', () => {
+        if (!chartMount.querySelector('iframe, .tradingview-widget-container')) {
+          tradingViewWidget(picker.value);
+        }
+      });
     });
 
+    // Populate KPIs/thesis/news for the default ticker up front; the chart
+    // builds lazily on first tab reveal (see above).
     if (CK_ROWS.length) render(CK_ROWS[0].t);
   }
 })();
