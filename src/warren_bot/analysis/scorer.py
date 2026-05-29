@@ -57,6 +57,15 @@ class TickerScore:
     valuation: ValuationSet
     error: str | None = None
     data_coverage: float = 0.0   # fraction of criteria with real (non-na) data
+    # Penalty (0-100, subtracted from `total` for ranking) applied by the enrich
+    # stage when key figures can't be corroborated by a second data source.
+    corroboration_penalty: float = 0.0
+
+    @property
+    def effective_total(self) -> float:
+        """Ranking score after the corroboration penalty. Equals `total` when no
+        penalty applies, so existing behavior is unchanged without enrichment."""
+        return max(0.0, self.total - self.corroboration_penalty)
 
     def cells(self) -> list[HeatCell]:
         return [c for d in self.dimensions for c in d.cells]

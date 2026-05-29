@@ -62,6 +62,35 @@ data:
   # all-US universe. Set to 0 to disable.
   min_market_cap_usd: 300000000   # $300M
 
+# Secondary data sources (tier-2 enrichment). The free yfinance sweep screens the
+# whole universe; these are consulted only on the finalists + completeness-gate
+# failures (dozens of names per run, within free-tier limits) to gap-fill missing
+# statements and cross-check key figures. yfinance always stays the scoring base
+# (gap-fill never overwrites it). EDGAR needs no key; FMP/Finnhub auto-activate
+# only when their API key env var is set.
+sources:
+  edgar:                          # SEC EDGAR XBRL — free, authoritative filings
+    enabled: true
+    # SEC fair-access policy requires a declared contact. Override via env if you
+    # prefer not to commit one. Keep it a real, reachable address.
+    user_agent: ${SEC_USER_AGENT}
+    requests_per_sec: 8
+    facts_ttl_hours: 720          # 30 days (companyfacts change quarterly)
+  fmp:                            # Financial Modeling Prep — statements gap-filler
+    enabled: true
+    api_key: ${FMP_API_KEY}       # inactive until set (free tier: 250 calls/day)
+    requests_per_sec: 4
+  finnhub:                        # Finnhub — price/market-cap/shares cross-check
+    enabled: true
+    api_key: ${FINNHUB_API_KEY}   # inactive until set (free tier: 60 calls/min)
+    requests_per_sec: 1
+  merge:
+    enabled: true
+    enrich_top_n: 50              # validate this many top finalists
+    rescue_gate_failures: true    # gap-fill names yfinance returned incomplete
+    rescue_limit: 150
+    divergence_pct_flag: 5.0      # flag a key figure when sources differ by >5%
+
 # Throttle control for yfinance/Yahoo. Yahoo rate-limits hard and, worse, often
 # answers a throttled request with a SILENT empty frame (no error) — which is
 # how cash-flow/valuation data was going missing. These knobs trade runtime for

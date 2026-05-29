@@ -118,6 +118,11 @@ class TickerSnapshot:
     error: str | None = None
     price_asof: float | None = None          # epoch secs when price/mcap last refreshed
     statements_asof: float | None = None     # epoch secs when statements were last pulled
+    # Multi-source enrichment metadata (populated by data.merge; empty for a plain
+    # yfinance fetch). provenance maps each statement / filled row to the source
+    # that supplied it; flags are human-readable cross-source disagreement notes.
+    provenance: dict[str, str] = field(default_factory=dict)
+    flags: list[str] = field(default_factory=list)
 
     def missing_statements(self) -> list[str]:
         """Which of the REQUIRED_STATEMENTS came back empty/absent."""

@@ -191,7 +191,12 @@ def build_cockpit_data(
             "ic": _round(rat.interest_coverage, 1),
             # Scores
             "score": _round(s.total, 1),
+            "scoreEff": _round(getattr(s, "effective_total", s.total), 1),
             "dims": dims,
+            # Data quality (multi-source enrichment). flags = cross-source
+            # disagreements; prov = which source supplied each statement.
+            "flags": list(getattr(p, "flags", []) or []),
+            "prov": dict(getattr(p, "provenance", {}) or {}),
             "composite": _round(rec.composite_score, 1) if rec else None,
             "tier": rec.tier if rec else None,
             "holdings": rec.holdings_count if rec else 0,
