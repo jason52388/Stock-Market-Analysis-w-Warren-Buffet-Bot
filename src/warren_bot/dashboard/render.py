@@ -31,6 +31,99 @@ def _round(v: Any, n: int) -> float | None:
     return round(f, n)
 
 
+def build_cockpit_data(
+    picks: list[Pick],
+    recommendations: list[Recommendation] | None = None,
+    stock_news: dict[str, list[NewsItem]] | None = None,
+) -> list[dict[str, Any]]:
+    """Per-ticker payload for the Cockpit tab: every KPI, dim score, thesis, news.
+
+    Returns a list (preserves order) so the picker can default to the first
+    (highest-scoring) ticker. Inlined as JSON in the dashboard; keep primitive.
+    """
+    stock_news = stock_news or {}
+    rec_by_ticker: dict[str, Recommendation] = {}
+    for r in recommendations or []:
+        rec_by_ticker[r.pick.score.ticker] = r
+
+    out: list[dict[str, Any]] = []
+    for p in picks:
+        if p.score.error:
+            continue
+        s = p.score
+        info = p.snap_info or {}
+        val = s.valuation
+        rat = s.ratios
+
+        div_yld = info.get("dividendYield")
+        if div_yld is not None and div_yld < 1:
+            div_yld = div_yld * 100.0
+
+        dims = [{"n": d.name, "s": _round(d.score, 0)} for d in s.dimensions]
+
+        news_items = stock_news.get(s.ticker, [])[:5]
+        news = [{
+            "t": n.title,
+            "u": n.url,
+            "p": n.publisher,
+            "d": n.published_at.strftime("%b %d") if n.published_at else "",
+        } for n in news_items]
+
+        rec = rec_by_ticker.get(s.ticker)
+        out.append({
+            "t": s.ticker,
+            "n": s.name,
+            "sc": s.sector or "",
+            # Price block
+            "px": _round(info.get("regularMarketPrice") or val.price, 2),
+            "mc": info.get("marketCap"),
+            "w52h": _round(info.get("fiftyTwoWeekHigh"), 2),
+            "w52l": _round(info.get("fiftyTwoWeekLow"), 2),
+            "beta": _round(info.get("beta"), 2),
+            # Valuation
+            "pe": _round(info.get("trailingPE"), 2),
+            "fpe": _round(info.get("forwardPE"), 2),
+            "pb": _round(info.get("priceToBook"), 2),
+            "peg": _round(info.get("pegRatio") or info.get("trailingPegRatio"), 2),
+            "ps": _round(info.get("priceToSalesTrailing12Months"), 2),
+            "evEbitda": _round(info.get("enterpriseToEbitda"), 2),
+            "mos": _round(val.margin_of_safety_pct, 0),
+            "iv": _round(val.intrinsic_value_per_share, 2),
+            # Cash returns
+            "dy": _round(div_yld, 2),
+            "fcy": _round(val.fcf_yield_pct, 2),
+            "shy": _round(val.shareholder_yield_pct, 2),
+            # Profitability / ratios
+            "roe": _round(rat.roe_pct_avg, 1),
+            "roic": _round(rat.roic_pct_avg, 1),
+            "gm": _round(rat.gross_margin_pct_avg, 1),
+            "nm": _round(rat.net_margin_pct_avg, 1),
+            "om": _round((info.get("operatingMargins") or 0) * 100 if info.get("operatingMargins") else None, 1),
+            # Balance sheet
+            "de": _round(rat.debt_to_equity, 2),
+            "cr": _round(rat.current_ratio, 2),
+            "ic": _round(rat.interest_coverage, 1),
+            # Scores
+            "score": _round(s.total, 1),
+            "dims": dims,
+            "composite": _round(rec.composite_score, 1) if rec else None,
+            "tier": rec.tier if rec else None,
+            "holdings": rec.holdings_count if rec else 0,
+            "buys": rec.buys_count if rec else 0,
+            "sells": rec.sells_count if rec else 0,
+            # Narrative
+            "thesis": (p.thesis.summary or "").replace("**", "").replace("_", ""),
+            "about": (info.get("longBusinessSummary") or info.get("description") or "")[:600],
+            "news": news,
+            # Analyst signals (yfinance)
+            "recKey": info.get("recommendationKey"),
+            "tgtMean": _round(info.get("targetMeanPrice"), 2),
+            "tgtHigh": _round(info.get("targetHighPrice"), 2),
+            "tgtLow": _round(info.get("targetLowPrice"), 2),
+        })
+    return out
+
+
 def build_kpi_rows(picks: list[Pick]) -> list[dict[str, Any]]:
     """Flatten each Pick into a compact KPI dict for the Market KPIs tab.
 
@@ -339,6 +432,111 @@ table.kpi td.na { color: var(--na); }
 /* Wrap any wide table so it scrolls horizontally inside its card on small screens. */
 .hf-section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
+/* ===================== COCKPIT ===================== */
+.cockpit-header { display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+                  align-items: center; background: var(--card); border: 1px solid var(--line);
+                  border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; }
+.cockpit-header .picker { display: flex; align-items: center; gap: 8px; }
+.cockpit-header .picker label { font-size: 11px; color: var(--muted);
+                                 text-transform: uppercase; letter-spacing: .04em; }
+.cockpit-header select { padding: 8px 10px; font-size: 14px; border: 1px solid var(--line);
+                          border-radius: 6px; background: #fff; min-width: 280px;
+                          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cockpit-header .ck-name { font-size: 14px; color: var(--muted); }
+.cockpit-header .ck-sector { background: #f0eee6; border-radius: 999px;
+                              padding: 4px 12px; font-size: 12px; color: #444; }
+.cockpit-header .ck-score { background: var(--hit-bg); color: var(--hit);
+                             border-radius: 999px; padding: 6px 14px;
+                             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                             font-weight: 700; font-size: 14px; }
+.cockpit-header .ck-score.angle { background: var(--marg-bg); color: var(--marg); }
+.cockpit-header .ck-score.weak { background: #efeee8; color: #6a6a6a; }
+
+/* Circular layout: 3x3 grid, chart in center, 8 KPI panels around it */
+.cockpit-ring { display: grid; grid-template-columns: 1fr 1.4fr 1fr;
+                grid-template-rows: 1fr 1.4fr 1fr; gap: 12px;
+                min-height: 720px; margin-bottom: 18px; }
+.cockpit-ring .panel { background: var(--card); border: 1px solid var(--line);
+                       border-radius: 12px; padding: 12px 14px; position: relative;
+                       display: flex; flex-direction: column; }
+.cockpit-ring .panel .panel-title { font-size: 10.5px; color: var(--muted);
+                                     text-transform: uppercase; letter-spacing: .06em;
+                                     font-weight: 700; margin-bottom: 8px;
+                                     display: flex; align-items: center; gap: 6px; }
+.cockpit-ring .panel .panel-title .clock { background: var(--accent); color: #fff;
+                                            border-radius: 999px; font-size: 9px;
+                                            padding: 1px 6px; font-weight: 700; }
+.cockpit-ring .panel .kpis { display: grid; gap: 6px; flex: 1; align-content: start; }
+.ck-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: baseline;
+          padding: 4px 0; border-bottom: 1px dotted var(--line); }
+.ck-row:last-child { border-bottom: none; }
+.ck-row .lbl { font-size: 11.5px; color: #555; }
+.ck-row .val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+               font-weight: 700; font-size: 13.5px; color: var(--ink); text-align: right; }
+.ck-row .val.up { color: var(--hit); }
+.ck-row .val.down { color: var(--miss); }
+.ck-row .val.na { color: var(--na); font-weight: 400; }
+.ck-row .val .sub { font-size: 10.5px; color: var(--muted); font-weight: 400;
+                    display: block; margin-top: 1px; }
+
+/* Center chart pod */
+.cockpit-ring .chart-pod { background: var(--card); border: 2px solid var(--accent);
+                           border-radius: 16px; padding: 8px; position: relative;
+                           display: flex; flex-direction: column;
+                           box-shadow: 0 2px 18px rgba(0,0,0,0.06); }
+.cockpit-ring .chart-pod .ticker-badge { position: absolute; top: -14px; left: 50%;
+                                          transform: translateX(-50%);
+                                          background: var(--accent); color: #fff;
+                                          border-radius: 999px; padding: 4px 16px;
+                                          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                                          font-weight: 700; font-size: 13px; letter-spacing: .04em; }
+.cockpit-ring .chart-pod .chart-mount { flex: 1; min-height: 360px; position: relative;
+                                         border-radius: 10px; overflow: hidden;
+                                         background: #fafaf7; }
+.cockpit-ring .chart-pod .chart-mount iframe { border: 0; width: 100%; height: 100%; }
+.cockpit-ring .chart-pod .chart-foot { font-size: 11px; color: var(--muted);
+                                        text-align: center; margin-top: 6px; }
+.cockpit-ring .chart-pod .chart-foot a { color: var(--ink); font-weight: 600; }
+
+/* Grid placement: clock positions */
+.cockpit-ring .p-12 { grid-column: 2; grid-row: 1; }
+.cockpit-ring .p-130 { grid-column: 3; grid-row: 1; }
+.cockpit-ring .p-3 { grid-column: 3; grid-row: 2; }
+.cockpit-ring .p-430 { grid-column: 3; grid-row: 3; }
+.cockpit-ring .p-6 { grid-column: 2; grid-row: 3; }
+.cockpit-ring .p-730 { grid-column: 1; grid-row: 3; }
+.cockpit-ring .p-9 { grid-column: 1; grid-row: 2; }
+.cockpit-ring .p-1030 { grid-column: 1; grid-row: 1; }
+.cockpit-ring .chart-pod { grid-column: 2; grid-row: 2; }
+
+/* Dim bars (Quality panel) */
+.dim-bar { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center;
+           font-size: 11px; }
+.dim-bar .bar-track { grid-column: 1 / -1; height: 6px; background: #efeee8;
+                       border-radius: 3px; overflow: hidden; margin-top: 2px; }
+.dim-bar .bar-fill { height: 100%; background: var(--hit); }
+.dim-bar .bar-fill.mid { background: var(--marg); }
+.dim-bar .bar-fill.low { background: var(--miss); }
+
+/* Tier pill in cockpit header */
+.ck-tier-pill { display: inline-block; border-radius: 5px; padding: 2px 8px;
+                font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+                letter-spacing: .04em; margin-left: 4px; }
+
+/* Lower panels: thesis / about / news */
+.cockpit-lower { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+.cockpit-lower .panel { background: var(--card); border: 1px solid var(--line);
+                        border-radius: 12px; padding: 14px 16px; }
+.cockpit-lower h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted);
+                    text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.cockpit-lower .thesis-body { font-size: 13px; line-height: 1.55; color: #222; }
+.cockpit-lower .about-body { font-size: 12.5px; line-height: 1.5; color: #444;
+                              margin-top: 10px; padding-top: 10px;
+                              border-top: 1px solid var(--line); }
+.cockpit-lower .news-list .news-item { margin: 0; padding: 8px 0;
+                                        border-bottom: 1px solid var(--line); }
+.cockpit-empty { padding: 30px; text-align: center; color: var(--muted); font-style: italic; }
+
 @media (max-width: 640px) {
   .wrap { padding: 14px 12px 40px; }
   header { gap: 8px; }
@@ -387,6 +585,19 @@ table.kpi td.na { color: var(--na); }
   /* News and article items: a hair more breathing room. */
   .brief-topic { padding: 12px 14px; }
   .brief-topic h3 { font-size: 15px; }
+
+  /* Cockpit: collapse the ring to a stack on mobile. */
+  .cockpit-header { grid-template-columns: 1fr; gap: 8px; }
+  .cockpit-header select { min-width: 0; width: 100%; }
+  .cockpit-ring { grid-template-columns: 1fr; grid-template-rows: auto;
+                  min-height: 0; gap: 10px; }
+  .cockpit-ring .p-12, .cockpit-ring .p-130, .cockpit-ring .p-3,
+  .cockpit-ring .p-430, .cockpit-ring .p-6, .cockpit-ring .p-730,
+  .cockpit-ring .p-9, .cockpit-ring .p-1030, .cockpit-ring .chart-pod {
+    grid-column: 1; grid-row: auto;
+  }
+  .cockpit-ring .chart-pod .chart-mount { min-height: 280px; }
+  .cockpit-lower { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -400,6 +611,7 @@ table.kpi td.na { color: var(--na); }
 
 <div class="tabs">
   <button class="tab-btn active" data-target="recs">Recommended</button>
+  {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
   <button class="tab-btn" data-target="picks">Buffett picks</button>
   {% if brk %}<button class="tab-btn" data-target="berkshire">Berkshire</button>{% endif %}
   <button class="tab-btn" data-target="hedge">Hedge Funds</button>
@@ -539,6 +751,106 @@ composite = quant_score<br>
     Sources: yfinance financials · <a href="https://www.dataroma.com/m/grid.php" target="_blank">dataroma.com</a> 13F aggregates.
   </div>
 </section>
+
+<!-- ===================== COCKPIT TAB ===================== -->
+{% if cockpit_data %}
+<section id="cockpit" class="tab">
+
+  <div class="cockpit-header">
+    <div class="picker">
+      <label for="ckPicker">Stock</label>
+      <select id="ckPicker">
+        {% for c in cockpit_data %}
+        <option value="{{ c.t }}">{{ c.t }} — {{ c.n }}</option>
+        {% endfor %}
+      </select>
+      <span class="ck-name" id="ckName"></span>
+    </div>
+    <span class="ck-sector" id="ckSector"></span>
+    <span class="ck-score" id="ckScore"></span>
+  </div>
+
+  <div class="cockpit-ring">
+
+    <!-- 12 o'clock: Price & size -->
+    <div class="panel p-12">
+      <div class="panel-title"><span class="clock">12</span> Price &amp; Size</div>
+      <div class="kpis" id="ckPrice"></div>
+    </div>
+
+    <!-- 1:30: Valuation -->
+    <div class="panel p-130">
+      <div class="panel-title"><span class="clock">1:30</span> Valuation</div>
+      <div class="kpis" id="ckValuation"></div>
+    </div>
+
+    <!-- 3 o'clock: Cash returns -->
+    <div class="panel p-3">
+      <div class="panel-title"><span class="clock">3</span> Cash Returns</div>
+      <div class="kpis" id="ckCash"></div>
+    </div>
+
+    <!-- 4:30: Profitability -->
+    <div class="panel p-430">
+      <div class="panel-title"><span class="clock">4:30</span> Profitability</div>
+      <div class="kpis" id="ckProfit"></div>
+    </div>
+
+    <!-- Center: chart pod -->
+    <div class="chart-pod">
+      <div class="ticker-badge" id="ckTickerBadge">—</div>
+      <div class="chart-mount" id="ckChartMount"></div>
+      <div class="chart-foot">
+        12-month price · TradingView ·
+        <a id="ckYahooLink" target="_blank">Yahoo Finance ↗</a>
+      </div>
+    </div>
+
+    <!-- 6 o'clock: Buffett verdict -->
+    <div class="panel p-6">
+      <div class="panel-title"><span class="clock">6</span> Verdict</div>
+      <div class="kpis" id="ckVerdict"></div>
+    </div>
+
+    <!-- 7:30: Balance sheet -->
+    <div class="panel p-730">
+      <div class="panel-title"><span class="clock">7:30</span> Balance Sheet</div>
+      <div class="kpis" id="ckBalance"></div>
+    </div>
+
+    <!-- 9 o'clock: Quality dimensions -->
+    <div class="panel p-9">
+      <div class="panel-title"><span class="clock">9</span> Buffett Dimensions</div>
+      <div class="kpis" id="ckDims"></div>
+    </div>
+
+    <!-- 10:30: Risk -->
+    <div class="panel p-1030">
+      <div class="panel-title"><span class="clock">10:30</span> Risk &amp; Range</div>
+      <div class="kpis" id="ckRisk"></div>
+    </div>
+
+  </div>
+
+  <div class="cockpit-lower">
+    <div class="panel">
+      <h3>Thesis</h3>
+      <div class="thesis-body" id="ckThesis"></div>
+      <div class="about-body" id="ckAbout"></div>
+    </div>
+    <div class="panel">
+      <h3>Recent News</h3>
+      <div class="news-list" id="ckNews"></div>
+    </div>
+  </div>
+
+  <div class="attribution">
+    Chart: TradingView · Fundamentals: yfinance · Buffett score: this bot's
+    composite (0–100) · Composite: quant + smart-money signal.
+  </div>
+</section>
+<script id="ckData" type="application/json">{{ cockpit_json }}</script>
+{% endif %}
 
 <!-- ===================== PICKS TAB ===================== -->
 <section id="picks" class="tab">
@@ -1355,6 +1667,208 @@ composite = quant_score<br>
     sortFiltered();
     render();
   }
+
+  // ============== Cockpit ==============
+  const ckDataEl = document.getElementById('ckData');
+  if (ckDataEl) {
+    const CK_ROWS = JSON.parse(ckDataEl.textContent);
+    const CK_BY = {};
+    CK_ROWS.forEach(r => { CK_BY[r.t] = r; });
+
+    const picker = document.getElementById('ckPicker');
+    const nameEl = document.getElementById('ckName');
+    const sectorEl = document.getElementById('ckSector');
+    const scoreEl = document.getElementById('ckScore');
+    const tickerBadge = document.getElementById('ckTickerBadge');
+    const chartMount = document.getElementById('ckChartMount');
+    const yahooLink = document.getElementById('ckYahooLink');
+
+    function fmtMcapCK(v) {
+      if (v == null) return '—';
+      if (v >= 1e12) return '$' + (v / 1e12).toFixed(2) + 'T';
+      if (v >= 1e9)  return '$' + (v / 1e9).toFixed(2) + 'B';
+      if (v >= 1e6)  return '$' + (v / 1e6).toFixed(0) + 'M';
+      return '$' + Math.round(v);
+    }
+    function v(val, suffix, digits) {
+      if (val == null) return '<span class="val na">—</span>';
+      const d = digits == null ? 2 : digits;
+      return '<span class="val">' + Number(val).toFixed(d) + (suffix || '') + '</span>';
+    }
+    function vTxt(val) {
+      if (val == null || val === '') return '<span class="val na">—</span>';
+      return '<span class="val">' + String(val).replace(/</g, '&lt;') + '</span>';
+    }
+    function row(lbl, valHtml) {
+      return '<div class="ck-row"><span class="lbl">' + lbl + '</span>' + valHtml + '</div>';
+    }
+    function dimBar(d) {
+      const sc = d.s == null ? 0 : d.s;
+      const cls = sc >= 70 ? '' : (sc >= 45 ? 'mid' : 'low');
+      return '<div class="dim-bar">' +
+        '<span class="lbl" style="font-size:11px;color:#555;">' + d.n + '</span>' +
+        '<span class="val" style="font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:12px;">' + sc + '</span>' +
+        '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(100, Math.max(0, sc)) + '%;"></div></div>' +
+      '</div>';
+    }
+    function tradingViewWidget(ticker) {
+      // Rebuild the widget container from scratch — TradingView's embed script
+      // mutates the node, so swapping innerHTML alone leaves stale state.
+      chartMount.innerHTML = '';
+      const container = document.createElement('div');
+      container.className = 'tradingview-widget-container';
+      container.style.height = '100%';
+      container.style.width = '100%';
+      const inner = document.createElement('div');
+      inner.className = 'tradingview-widget-container__widget';
+      inner.style.height = '100%';
+      inner.style.width = '100%';
+      container.appendChild(inner);
+      const script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        symbol: ticker,
+        width: '100%',
+        height: '100%',
+        locale: 'en',
+        dateRange: '12M',
+        colorTheme: 'light',
+        trendLineColor: 'rgba(26, 26, 26, 1)',
+        underLineColor: 'rgba(26, 26, 26, 0.15)',
+        underLineBottomColor: 'rgba(26, 26, 26, 0)',
+        isTransparent: true,
+        autosize: true,
+        largeChartUrl: ''
+      });
+      container.appendChild(script);
+      chartMount.appendChild(container);
+    }
+
+    function render(ticker) {
+      const c = CK_BY[ticker];
+      if (!c) return;
+
+      // Header
+      nameEl.textContent = c.n || '';
+      sectorEl.textContent = c.sc || 'Unknown sector';
+      const sc = c.score == null ? 0 : c.score;
+      scoreEl.className = 'ck-score' + (sc >= 75 ? '' : (sc >= 60 ? ' angle' : ' weak'));
+      scoreEl.textContent = (c.score == null ? '—' : c.score.toFixed(0)) + ' / 100';
+      tickerBadge.textContent = c.t;
+      yahooLink.href = 'https://finance.yahoo.com/quote/' + encodeURIComponent(c.t);
+
+      // Chart
+      tradingViewWidget(c.t);
+
+      // 12 — Price & Size
+      document.getElementById('ckPrice').innerHTML =
+        row('Price', c.px == null ? '<span class="val na">—</span>' : '<span class="val">$' + c.px.toFixed(2) + '</span>') +
+        row('Market Cap', '<span class="val">' + fmtMcapCK(c.mc) + '</span>') +
+        row('Analyst tgt', c.tgtMean == null
+            ? '<span class="val na">—</span>'
+            : '<span class="val">$' + c.tgtMean.toFixed(2)
+              + (c.recKey ? '<span class="sub">' + c.recKey + '</span>' : '')
+              + '</span>');
+
+      // 1:30 — Valuation
+      document.getElementById('ckValuation').innerHTML =
+        row('P/E (TTM)', v(c.pe)) +
+        row('Fwd P/E', v(c.fpe)) +
+        row('P/B', v(c.pb)) +
+        row('PEG', v(c.peg)) +
+        row('P/S', v(c.ps)) +
+        row('EV / EBITDA', v(c.evEbitda));
+
+      // 3 — Cash Returns
+      document.getElementById('ckCash').innerHTML =
+        row('FCF yield', v(c.fcy, '%', 2)) +
+        row('Dividend yield', v(c.dy, '%', 2)) +
+        row('Shareholder yld', v(c.shy, '%', 2));
+
+      // 4:30 — Profitability
+      document.getElementById('ckProfit').innerHTML =
+        row('ROE (10y avg)', v(c.roe, '%', 1)) +
+        row('ROIC (10y avg)', v(c.roic, '%', 1)) +
+        row('Op margin', v(c.om, '%', 1)) +
+        row('Net margin', v(c.nm, '%', 1)) +
+        row('Gross margin', v(c.gm, '%', 1));
+
+      // 6 — Verdict
+      const tierHtml = c.tier
+        ? '<span class="ck-tier-pill tier-badge ' + c.tier + '">' + c.tier + '</span>'
+        : '';
+      document.getElementById('ckVerdict').innerHTML =
+        row('Buffett score', '<span class="val">' + (c.score == null ? '—' : c.score.toFixed(0)) + '</span>') +
+        row('Composite', c.composite == null
+            ? '<span class="val na">—</span>'
+            : '<span class="val">' + c.composite.toFixed(0) + tierHtml + '</span>') +
+        row('Margin of safety', v(c.mos, '%', 0)) +
+        row('Intrinsic / share', c.iv == null
+            ? '<span class="val na">—</span>'
+            : '<span class="val">$' + c.iv.toFixed(2) + '</span>');
+
+      // 7:30 — Balance Sheet
+      document.getElementById('ckBalance').innerHTML =
+        row('Debt / Equity', v(c.de)) +
+        row('Current ratio', v(c.cr)) +
+        row('Interest cov', v(c.ic, 'x', 1));
+
+      // 9 — Dimensions
+      const dimsHtml = (c.dims || []).map(dimBar).join('');
+      document.getElementById('ckDims').innerHTML = dimsHtml ||
+        '<div style="color:var(--muted);font-size:12px;">No dimensions</div>';
+
+      // 10:30 — Risk
+      const rangeTxt = (c.w52l != null && c.w52h != null)
+        ? '$' + c.w52l.toFixed(2) + ' – $' + c.w52h.toFixed(2)
+        : null;
+      document.getElementById('ckRisk').innerHTML =
+        row('Beta', v(c.beta)) +
+        row('52w range', rangeTxt
+            ? '<span class="val" style="font-size:11.5px;">' + rangeTxt + '</span>'
+            : '<span class="val na">—</span>') +
+        row('Smart-money holders', '<span class="val">' + (c.holdings || 0) + '</span>') +
+        row('Buys / Sells last qtr',
+            '<span class="val">' + (c.buys || 0) + ' / ' + (c.sells || 0) + '</span>');
+
+      // Lower: thesis + about + news
+      const thesisHtml = c.thesis
+        ? c.thesis.replace(/\n\n/g, '<br><br>')
+        : '<span style="color:var(--muted);font-style:italic;">No thesis available.</span>';
+      document.getElementById('ckThesis').innerHTML = thesisHtml;
+      document.getElementById('ckAbout').textContent = c.about || '';
+
+      const newsEl = document.getElementById('ckNews');
+      if (!c.news || !c.news.length) {
+        newsEl.innerHTML = '<div class="no-content">No recent news.</div>';
+      } else {
+        newsEl.innerHTML = c.news.map(n =>
+          '<div class="news-item">' +
+            '<a href="' + n.u + '" target="_blank">' + n.t.replace(/</g, '&lt;') + '</a>' +
+            '<div class="meta">' + (n.p || '') + (n.d ? ' · ' + n.d : '') + '</div>' +
+          '</div>'
+        ).join('');
+      }
+    }
+
+    picker.addEventListener('change', () => render(picker.value));
+
+    // Re-render chart when Cockpit tab becomes active (TradingView widget needs
+    // a sized container to mount; if it loads while hidden the mini-chart
+    // collapses to 0×0 and never recovers).
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      if (b.dataset.target === 'cockpit') {
+        b.addEventListener('click', () => {
+          // Reload chart for the current ticker after the tab is visible.
+          setTimeout(() => tradingViewWidget(picker.value), 50);
+        });
+      }
+    });
+
+    if (CK_ROWS.length) render(CK_ROWS[0].t);
+  }
 })();
 </script>
 </body></html>
@@ -1462,6 +1976,7 @@ def render_dashboard(
     kpi_rows: list[dict[str, Any]] | None = None,
     cache_ttl_hours: int | None = None,
     partial: list[Pick] | None = None,
+    cockpit_data: list[dict[str, Any]] | None = None,
 ) -> str:
     from markupsafe import Markup
 
@@ -1499,6 +2014,9 @@ def render_dashboard(
     # Escape `</` so a stray "</script>" inside data can't terminate the block.
     kpi_json_str = json.dumps(kpi_rows, separators=(",", ":")).replace("</", "<\\/")
 
+    cockpit_data = cockpit_data or []
+    cockpit_json_str = json.dumps(cockpit_data, separators=(",", ":")).replace("</", "<\\/")
+
     now = datetime.now()
     return template.render(
         strong=strong,
@@ -1518,6 +2036,8 @@ def render_dashboard(
         kpi_rows=kpi_rows,
         kpi_sectors=kpi_sectors,
         kpi_json=Markup(kpi_json_str),
+        cockpit_data=cockpit_data,
+        cockpit_json=Markup(cockpit_json_str),
         cache_ttl_hours=cache_ttl_hours or 168,
         date=now.strftime("%A, %B %d %Y"),
         generated_at=now.strftime("%Y-%m-%d %H:%M"),

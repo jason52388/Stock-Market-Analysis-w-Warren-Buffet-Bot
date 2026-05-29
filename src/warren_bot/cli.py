@@ -158,9 +158,14 @@ def run(
     click.echo(f"Built {len(recommendations)} blended recommendations")
 
     # Build KPI rows for the Market KPIs tab (all screened tickers, errored ones excluded).
-    from .dashboard.render import build_kpi_rows, render_dashboard
+    from .dashboard.render import build_cockpit_data, build_kpi_rows, render_dashboard
     kpi_rows = build_kpi_rows([p for p in picks if not p.score.error])
     click.echo(f"Built KPI table: {len(kpi_rows)} rows")
+
+    # Cockpit feed: every surfaced pick gets a fully-populated payload (KPIs,
+    # dim scores, thesis, news, recommendation/composite if present).
+    cockpit_data = build_cockpit_data(surfaced, recommendations, stock_news)
+    click.echo(f"Built cockpit data: {len(cockpit_data)} tickers")
 
     # Render dashboard.html (always)
     dash_path = repo_root() / dashboard_out if not dashboard_out.is_absolute() else dashboard_out
@@ -172,6 +177,7 @@ def run(
         kpi_rows=kpi_rows,
         cache_ttl_hours=int(settings["data"]["cache_ttl_hours"]),
         partial=partial,
+        cockpit_data=cockpit_data,
     )
     dash_path.write_text(dash_html)
     click.echo(f"Wrote dashboard: {dash_path}")
