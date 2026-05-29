@@ -57,6 +57,23 @@ data:
   # all-US universe. Set to 0 to disable.
   min_market_cap_usd: 300000000   # $300M
 
+# Throttle control for yfinance/Yahoo. Yahoo rate-limits hard and, worse, often
+# answers a throttled request with a SILENT empty frame (no error) — which is
+# how cash-flow/valuation data was going missing. These knobs trade runtime for
+# completeness; tuned here to prioritize complete data over speed.
+#   - max_workers:     concurrent fetch threads (lower = gentler on Yahoo).
+#   - requests_per_sec: global ceiling shared across ALL threads (0 = unlimited).
+#   - blank_retries:   extra re-pulls when a statement comes back empty.
+#   - yf_internal_retries: yfinance's own per-request HTTP retry (set_config).
+# A full cold run of the all-US universe at these settings can take a few hours;
+# warm runs (cache hits) are fast. Raise the rate / workers to speed up.
+throttle:
+  max_workers: 3
+  requests_per_sec: 3.0
+  blank_retries: 2
+  blank_retry_backoff_sec: 1.5
+  yf_internal_retries: 3
+
 # Universe files (relative to repo root). All files are merged + deduped.
 # Comment out lines to narrow the universe.
 universe:

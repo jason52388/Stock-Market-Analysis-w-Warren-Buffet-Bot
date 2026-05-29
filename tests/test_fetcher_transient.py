@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from warren_bot.data.fetcher import Fetcher, TickerSnapshot, _fetch_ticker  # noqa: F401
+from warren_bot.data.fetcher import (  # noqa: F401
+    Fetcher,
+    RateLimiter,
+    TickerSnapshot,
+    _fetch_ticker,
+    _pull,
+)
 
 
 class TestIsTransientError:
@@ -164,6 +170,71 @@ class TestTransientShortTTL:
         assert result.info["marketCap"] == 3e12
         cache.close()
 
+class TestRateLimiter:
+    def test_spaces_calls_to_the_configured_rate(self):
+        import time
+        rl = RateLimiter(requests_per_sec=50)  # 20ms min interval
+        start = time.monotonic()
+        for _ in range(5):
+            rl.wait()
+        elapsed = time.monotonic() - start
+        # 5 releases at 20ms spacing => ~4 intervals (~80ms). Allow slack.
+        assert elapsed >= 0.06
+
+    def test_zero_rate_is_unbounded(self):
+        import time
+        rl = RateLimiter(requests_per_sec=0)
+        start = time.monotonic()
+        for _ in range(100):
+            rl.wait()
+        assert time.monotonic() - start < 0.05  # no artificial delay
+
+
+class TestBlankRetry:
+    """yfinance returns an empty frame (no exception) when throttled, so the
+    fetch re-pulls blanks itself instead of relying on tenacity."""
+
+    def test_pull_retries_blank_then_succeeds(self):
+        import pandas as pd
+        good = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["X"])
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            return pd.DataFrame() if calls["n"] < 3 else good
+
+        out = _pull(getter, RateLimiter(0), attempts=3, backoff=0)
+        assert calls["n"] == 3
+        assert out is good
+
+    def test_pull_gives_up_after_attempts(self):
+        import pandas as pd
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            return pd.DataFrame()  # always blank
+
+        out = _pull(getter, RateLimiter(0), attempts=2, backoff=0)
+        assert calls["n"] == 2          # bounded, not infinite
+        assert out is not None and out.empty
+
+    def test_pull_swallows_exceptions_and_retries(self):
+        import pandas as pd
+        good = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["X"])
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient throttle")
+            return good
+
+        out = _pull(getter, RateLimiter(0), attempts=2, backoff=0)
+        assert out is good
+
+
+class TestForceRefresh:
     def test_force_refresh_bypasses_cache(self, tmp_cache):
         fetcher = Fetcher(tmp_cache, min_market_cap=0)
         cached = TickerSnapshot(ticker="AAPL", info={"x": 1})

@@ -50,12 +50,17 @@ def build_cache(settings: dict) -> Cache:
 
 def _build_fetcher(settings: dict, cache: Cache | None = None) -> Fetcher:
     data_cfg = settings["data"]
+    thr = settings.get("throttle", {})
     cache = cache or build_cache(settings)
     return Fetcher(
         cache,
         batch_size=int(data_cfg["yf_batch_size"]),
         batch_sleep_sec=float(data_cfg["yf_batch_sleep_sec"]),
         min_market_cap=float(data_cfg.get("min_market_cap_usd", 0) or 0),
+        requests_per_sec=float(thr.get("requests_per_sec", 0) or 0),
+        blank_retries=int(thr.get("blank_retries", 0) or 0),
+        blank_retry_backoff_sec=float(thr.get("blank_retry_backoff_sec", 1.5)),
+        yf_internal_retries=int(thr.get("yf_internal_retries", 0) or 0),
     )
 
 
@@ -90,18 +95,21 @@ def run_universe(
     limit: int | None = None,
     force_refresh: bool = False,
     sample: bool = False,
-    max_workers: int = 6,
+    max_workers: int | None = None,
     cache: Cache | None = None,
 ) -> list[Pick]:
     """Score the configured universe of tickers.
 
-    Tickers are fetched/scored in parallel with a bounded pool — yfinance
-    handles ~6 concurrent connections well. Cache hits return instantly so
-    warm runs scale near-linearly with worker count.
+    Tickers are fetched/scored in parallel with a bounded pool. The pool size
+    and a shared rate limiter (see `throttle` in settings) together keep the
+    aggregate Yahoo request rate low enough to avoid 429s / blank responses.
+    Cache hits return instantly, so warm runs are fast regardless of the limit.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     settings = settings or load_settings()
+    if max_workers is None:
+        max_workers = int(settings.get("throttle", {}).get("max_workers", 3) or 3)
     tickers = load_universe(settings)
     if limit:
         if sample:

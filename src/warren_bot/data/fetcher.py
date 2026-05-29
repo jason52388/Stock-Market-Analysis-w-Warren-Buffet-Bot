@@ -5,9 +5,10 @@ Returns a normalized `TickerSnapshot` so analytics code never touches yfinance d
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import yfinance as yf
@@ -16,6 +17,85 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from .cache import Cache
 
 log = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Thread-safe minimum-interval gate shared across worker threads.
+
+    The screener fans tickers out across a thread pool, and each ticker makes
+    several Yahoo requests. Without a global limiter those requests arrive in
+    bursts and Yahoo answers with 429s or — worse — silent empty frames. This
+    gate serializes the *moment of release* so the aggregate request rate across
+    ALL threads stays under `requests_per_sec`, no matter how many workers run.
+    """
+
+    def __init__(self, requests_per_sec: float):
+        self.min_interval = (1.0 / requests_per_sec) if requests_per_sec and requests_per_sec > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval <= 0:
+            return
+        # Hold the lock across the sleep so threads release one-per-interval.
+        with self._lock:
+            now = time.monotonic()
+            wait_for = self._next_allowed - now
+            if wait_for > 0:
+                time.sleep(wait_for)
+                now = time.monotonic()
+            self._next_allowed = max(now, self._next_allowed) + self.min_interval
+
+
+# A process-wide default so module-level helpers (and tests) always have a gate
+# even before a Fetcher configures one. Fetcher.__init__ replaces it with the
+# settings-driven instance.
+_LIMITER = RateLimiter(0.0)
+
+_YF_CONFIGURED = False
+
+
+def _configure_yfinance(retries: int) -> None:
+    """Bump yfinance's own per-request retry count (best effort; older versions
+    lack set_config). This stacks under our blank-retry: yfinance retries hard
+    HTTP failures, we retry silent empties."""
+    global _YF_CONFIGURED
+    if _YF_CONFIGURED or not retries:
+        return
+    _YF_CONFIGURED = True
+    try:
+        # Newer yfinance exposes `yf.config.network.retries`; older versions use
+        # `yf.set_config(retries=...)` (now deprecated). Prefer the new path to
+        # avoid the deprecation warning, fall back for the pinned floor.
+        cfg = getattr(yf, "config", None)
+        net = getattr(cfg, "network", None) if cfg is not None else None
+        if net is not None and hasattr(net, "retries"):
+            net.retries = int(retries)
+        elif hasattr(yf, "set_config"):
+            yf.set_config(retries=int(retries))
+    except Exception as e:  # pragma: no cover - version dependent
+        log.debug("configuring yfinance retries=%s failed: %s", retries, e)
+
+
+def _pull(getter: Callable[[], "pd.DataFrame | None"], limiter: RateLimiter,
+          *, attempts: int, backoff: float) -> "pd.DataFrame | None":
+    """Fetch a statement through the rate limiter, re-pulling when it comes back
+    empty/None — the signature of a silently-throttled response that yfinance
+    does NOT raise on (so tenacity never sees it). Returns the last result."""
+    last: "pd.DataFrame | None" = None
+    for i in range(max(1, attempts)):
+        limiter.wait()
+        try:
+            df = getter()
+        except Exception as e:
+            log.debug("statement pull failed: %s", e)
+            df = None
+        if df is not None and not getattr(df, "empty", True):
+            return df
+        last = df
+        if i < attempts - 1 and backoff:
+            time.sleep(backoff * (i + 1))
+    return last
 
 
 # Statements a Buffett screen needs before a ticker is scoreable. yfinance pulls
@@ -58,9 +138,14 @@ class TickerSnapshot:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30))
-def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
+def _fetch_ticker(ticker: str, min_market_cap: float = 0, *,
+                  limiter: RateLimiter | None = None,
+                  blank_retries: int = 0, blank_retry_backoff_sec: float = 1.5) -> TickerSnapshot:
+    limiter = limiter or _LIMITER
+    attempts = blank_retries + 1
     yft = yf.Ticker(ticker)
     snap = TickerSnapshot(ticker=ticker)
+    limiter.wait()
     try:
         snap.info = yft.info or {}
     except Exception as e:
@@ -75,6 +160,7 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
         # below the cap threshold, otherwise one partial response can hide a
         # perfectly valid large-cap stock for the cache TTL.
         try:
+            limiter.wait()
             fi = yft.fast_info
             fast_mcap = (
                 fi.get("market_cap") if hasattr(fi, "get")
@@ -89,22 +175,19 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
         snap.error = f"below min market cap (mcap={mcap})"
         return snap
 
-    try:
-        snap.income = yft.get_income_stmt(freq="yearly")
-    except Exception as e:
-        log.debug("income fetch failed for %s: %s", ticker, e)
-    try:
-        snap.balance = yft.get_balance_sheet(freq="yearly")
-    except Exception as e:
-        log.debug("balance fetch failed for %s: %s", ticker, e)
-    try:
-        snap.cashflow = yft.get_cashflow(freq="yearly")
-    except Exception as e:
-        log.debug("cashflow fetch failed for %s: %s", ticker, e)
-    try:
-        snap.price_history = yft.history(period="10y", interval="1mo", auto_adjust=False)
-    except Exception as e:
-        log.debug("history fetch failed for %s: %s", ticker, e)
+    # Each statement is rate-limited and re-pulled if it returns empty (a
+    # silently-throttled response). This is where most "blank data" was coming
+    # from — yfinance returns an empty frame without raising, so the only way to
+    # recover within the run is to space the calls out and try the blank again.
+    snap.income = _pull(lambda: yft.get_income_stmt(freq="yearly"), limiter,
+                        attempts=attempts, backoff=blank_retry_backoff_sec)
+    snap.balance = _pull(lambda: yft.get_balance_sheet(freq="yearly"), limiter,
+                         attempts=attempts, backoff=blank_retry_backoff_sec)
+    snap.cashflow = _pull(lambda: yft.get_cashflow(freq="yearly"), limiter,
+                          attempts=attempts, backoff=blank_retry_backoff_sec)
+    snap.price_history = _pull(
+        lambda: yft.history(period="10y", interval="1mo", auto_adjust=False),
+        limiter, attempts=attempts, backoff=blank_retry_backoff_sec)
 
     snap.price_asof = time.time()
     missing = snap.missing_statements()
@@ -116,10 +199,11 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
     return snap
 
 
-def _refresh_quote(snap: TickerSnapshot) -> bool:
+def _refresh_quote(snap: TickerSnapshot, limiter: RateLimiter | None = None) -> bool:
     """Best-effort refresh of just the fast-moving fields (price + market cap)
     on an otherwise-valid cached snapshot, so week-old statements don't drag a
     week-old *price* into the valuation. Returns True if anything was updated."""
+    (limiter or _LIMITER).wait()
     try:
         fi = yf.Ticker(snap.ticker).fast_info
         last = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
@@ -150,13 +234,23 @@ class Fetcher:
     _PRICE_TTL_SECONDS = 24 * 60 * 60
 
     def __init__(self, cache: Cache, batch_size: int = 25, batch_sleep_sec: float = 2.0,
-                 min_market_cap: float = 0, price_ttl_seconds: int | None = None):
+                 min_market_cap: float = 0, price_ttl_seconds: int | None = None,
+                 *, requests_per_sec: float = 0.0, blank_retries: int = 0,
+                 blank_retry_backoff_sec: float = 1.5, yf_internal_retries: int = 0):
         self.cache = cache
         self.batch_size = batch_size
         self.batch_sleep_sec = batch_sleep_sec
         self.min_market_cap = min_market_cap
         self.price_ttl_seconds = (price_ttl_seconds if price_ttl_seconds is not None
                                   else self._PRICE_TTL_SECONDS)
+        # Throttle controls. The limiter is shared across all worker threads, so
+        # the aggregate Yahoo request rate stays bounded regardless of pool size.
+        self.limiter = RateLimiter(requests_per_sec)
+        self.blank_retries = blank_retries
+        self.blank_retry_backoff_sec = blank_retry_backoff_sec
+        global _LIMITER
+        _LIMITER = self.limiter  # so _refresh_quote / bare helpers share the gate
+        _configure_yfinance(yf_internal_retries)
 
     def _price_is_stale(self, snap: TickerSnapshot) -> bool:
         if snap.price_asof is None:
@@ -202,11 +296,15 @@ class Fetcher:
                     # Statements are still fresh, but refresh the price if it's
                     # gone stale so the valuation doesn't run on a week-old quote.
                     if cached.ok and self._price_is_stale(cached):
-                        if _refresh_quote(cached):
+                        if _refresh_quote(cached, self.limiter):
                             self.cache.set("snapshot", ticker, cached)
                     return cached
         try:
-            snap = _fetch_ticker(ticker, min_market_cap=self.min_market_cap)
+            snap = _fetch_ticker(
+                ticker, min_market_cap=self.min_market_cap,
+                limiter=self.limiter, blank_retries=self.blank_retries,
+                blank_retry_backoff_sec=self.blank_retry_backoff_sec,
+            )
         except Exception as e:
             log.warning("fetch failed for %s: %s", ticker, e)
             snap = TickerSnapshot(ticker=ticker, error=str(e))
