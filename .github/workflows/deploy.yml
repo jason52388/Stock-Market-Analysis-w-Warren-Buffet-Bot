@@ -25,7 +25,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -42,6 +42,9 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # The website refresh runs the screener, which can take several
+          # minutes; raise the per-command timeout above the 10m default.
+          command_timeout: 40m
           # Forward the app-config env vars into the remote shell so the heredoc
           # below can write them into .env.
           envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID
@@ -78,4 +81,13 @@ jobs:
             EOF
 
             docker compose up -d --build
+
+            # Refresh the website with the just-deployed code: regenerate the
+            # dashboard and rebuild the index pages. --skip-delivery means NO
+            # email/Notion on a push — those still go out only on the weekly
+            # cron. Give the container a moment to be ready before exec.
+            sleep 3
+            docker compose exec -T bot warren-bot run --skip-delivery
+            docker compose exec -T bot /app/deploy/build-index.sh
+
             docker image prune -f
