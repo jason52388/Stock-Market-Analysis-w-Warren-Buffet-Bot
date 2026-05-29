@@ -25,12 +25,12 @@ Each ticker is graded 0–100 on five dimensions, then weighted into a total:
 | Valuation / Margin of Safety | 20% | FCF yield, P/E vs history, owner-earnings DCF |
 | Capital Allocation | 10% | Shareholder yield, share-count CAGR |
 
-- **≥ 75** → "strong match"
-- **60–74** → "interesting angle" (great on some dimensions, missing others)
-- **45–59** → "partial match" (weaker fit, kept around so the dashboard isn't empty when nothing clears 60)
-- **< 45** → not surfaced
+- **≥ 80** → "strong match"
+- **70–79** → "interesting angle" (great on some dimensions, missing others)
+- **60–69** → "partial match" (weaker fit, kept around so the dashboard isn't empty when nothing clears 70)
+- **< 60** → not surfaced
 
-Thresholds and weights live in `config/settings.yaml` — adjust freely.
+Thresholds, weights, and per-bucket display caps live in `config/settings.yaml` — adjust freely.
 
 ## Tests
 
@@ -106,7 +106,7 @@ Every run writes two files to `out/`:
     A "picked" pill marks names that also passed our Buffett screen — filter
     "Overlap with my picks" to see only those. 13F data updates quarterly so
     this view is cached for a week.
-- **`picks.csv`** — full ranked output with dimension scores and headline metrics.
+- **`picks.csv`** — full ranked audit/debug export with dimension scores and headline metrics.
 
 When email is enabled, the dashboard is attached as `dashboard.html`; the email
 body is just a short summary table.

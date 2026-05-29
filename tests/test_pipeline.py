@@ -94,6 +94,23 @@ class TestSplitPicks:
         all_surfaced = strong + angles + partial
         assert all(p.score.ticker == "OK" for p in all_surfaced)
 
+    def test_surface_limits_cap_each_bucket(self, base_settings):
+        base_settings["surface_limits"] = {"strong": 2, "angles": 1, "partial": 0}
+        picks = [
+            _fake_pick("S1", 90),
+            _fake_pick("S2", 89),
+            _fake_pick("S3", 88),
+            _fake_pick("A1", 70),
+            _fake_pick("A2", 69),
+            _fake_pick("P1", 50),
+        ]
+
+        strong, angles, partial = split_picks(picks, base_settings)
+
+        assert [p.score.ticker for p in strong] == ["S1", "S2"]
+        assert [p.score.ticker for p in angles] == ["A1"]
+        assert partial == []
+
 
 class TestWriteCsv:
     def test_writes_header_and_rows(self, tmp_path, base_settings):

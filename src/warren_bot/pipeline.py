@@ -166,7 +166,20 @@ def split_picks(
             angles.append(p)
         elif s >= partial_thr:
             partial.append(p)
+    limits = settings.get("surface_limits", {})
+    strong = _limit_bucket(strong, limits.get("strong"))
+    angles = _limit_bucket(angles, limits.get("angles"))
+    partial = _limit_bucket(partial, limits.get("partial"))
     return strong, angles, partial
+
+
+def _limit_bucket(picks: list[Pick], limit: int | None) -> list[Pick]:
+    if limit is None:
+        return picks
+    limit = int(limit)
+    if limit <= 0:
+        return []
+    return picks[:limit]
 
 
 def gather_stock_news(picks: list[Pick], *, per_ticker: int = 3) -> dict[str, list[NewsItem]]:

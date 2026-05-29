@@ -10,9 +10,16 @@ weights:
 
 # Thresholds for surfacing in digest
 score_thresholds:
-  strong_match: 75
-  interesting_angle: 60
-  partial_match: 45        # below this = not surfaced
+  strong_match: 80
+  interesting_angle: 70
+  partial_match: 60        # below this = not surfaced
+
+# Keep surfaced Buffett picks curated. The full ranked universe still lands in
+# out/picks.csv for audit/debug, but dashboard/email/Notion should stay selective.
+surface_limits:
+  strong: 25
+  angles: 35
+  partial: 15
 
 # Per-criterion targets (used by the piecewise scorer)
 criteria:
