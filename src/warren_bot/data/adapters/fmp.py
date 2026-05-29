@@ -11,6 +11,7 @@ FMP requires an ``apikey`` query parameter; without one the adapter is disabled.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pandas as pd
 
@@ -30,6 +31,7 @@ class FmpAdapter(SourceAdapter):
                  requests_per_sec: float = 4.0,
                  statement_ttl_seconds: int = 30 * 24 * 3600,
                  quote_ttl_seconds: int = 24 * 3600,
+                 max_fetches: int | None = None,
                  base_url: str = "https://financialmodelingprep.com/api/v3",
                  enabled: bool = True):
         super().__init__(enabled=enabled and bool(api_key))
@@ -38,7 +40,28 @@ class FmpAdapter(SourceAdapter):
         self.statement_ttl = statement_ttl_seconds
         self.quote_ttl = quote_ttl_seconds
         self.base_url = base_url.rstrip("/")
+        # Per-run budget on COLD tickers (each costs 4 calls) so a full run stays
+        # under FMP's free-tier daily cap. Warm (cached) tickers don't count.
+        self.max_fetches = max_fetches
+        self._lock = threading.Lock()
+        self._fetches = 0
         self.limiter = RateLimiter(requests_per_sec)
+
+    def _statements_cached(self, ticker: str) -> bool:
+        return all(self.cache.get(ns, ticker, ttl_override=self.statement_ttl) is not None
+                   for ns in ("fmp_income", "fmp_balance", "fmp_cashflow"))
+
+    def _within_budget(self, ticker: str) -> bool:
+        """True if this ticker may hit the network. Warm tickers (statements
+        already cached) always pass; cold tickers consume one budget unit until
+        the per-run cap is reached, after which they're skipped."""
+        if self.max_fetches is None or self._statements_cached(ticker):
+            return True
+        with self._lock:
+            if self._fetches >= self.max_fetches:
+                return False
+            self._fetches += 1
+            return True
 
     # --- raw endpoint helpers -----------------------------------------------
     def _statement_rows(self, endpoint: str, namespace: str, ticker: str) -> list:
@@ -74,6 +97,9 @@ class FmpAdapter(SourceAdapter):
     def fetch(self, ticker: str) -> SourceResult:
         if not self.enabled:
             return SourceResult(self.name, error="fmp disabled")
+        if not self._within_budget(ticker):
+            # Per-run FMP budget spent on cold tickers; skip network for this one.
+            return SourceResult(self.name, error="fmp budget exhausted")
 
         income_rows = self._statement_rows("income-statement", "fmp_income", ticker)
         balance_rows = self._statement_rows("balance-sheet-statement", "fmp_balance", ticker)

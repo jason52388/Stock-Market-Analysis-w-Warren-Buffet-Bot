@@ -125,7 +125,9 @@ def _fill_missing_rows(base_df: pd.DataFrame, src_df: pd.DataFrame | None,
 
 
 def _validate(consulted: set[str], figures_by_source: dict[str, dict],
-              *, divergence_pct: float) -> list[ValidationFlag]:
+              *, divergence_pct: float,
+              field_divergence: dict[str, float] | None = None) -> list[ValidationFlag]:
+    field_divergence = field_divergence or {}
     flags: list[ValidationFlag] = []
     all_fields = set().union(*(f.keys() for f in figures_by_source.values())) \
         if figures_by_source else set()
@@ -143,7 +145,11 @@ def _validate(consulted: set[str], figures_by_source: dict[str, dict],
             if med == 0:
                 continue
             spread = (max(reported.values()) - min(reported.values())) / abs(med) * 100.0
-            if spread > divergence_pct:
+            # Per-field tolerance: filing figures (revenue/net income) are exact and
+            # use the strict default; market cap & price legitimately differ across
+            # sources (real-time vs close, share-count basis) so they're looser.
+            threshold = field_divergence.get(fld, divergence_pct)
+            if spread > threshold:
                 flags.append(ValidationFlag(fld, "conflict", severity, reported, spread))
         elif severity == "high":
             # A capable second source existed but didn't corroborate a KEY figure.
@@ -155,7 +161,9 @@ def _validate(consulted: set[str], figures_by_source: dict[str, dict],
 
 
 def merge(base: TickerSnapshot, secondary: list[SourceResult],
-          *, divergence_pct: float = 5.0, fill_rows: bool = True) -> MergeResult:
+          *, divergence_pct: float = 5.0,
+          field_divergence: dict[str, float] | None = None,
+          fill_rows: bool = True) -> MergeResult:
     """Merge ``secondary`` source results onto the yfinance ``base`` snapshot.
 
     ``secondary`` is in precedence order: earlier sources win ties when filling a
@@ -193,7 +201,8 @@ def merge(base: TickerSnapshot, secondary: list[SourceResult],
         if any(_is_num(v) for v in figs.values()):
             figures_by_source[res.source] = figs
 
-    flags = _validate(consulted, figures_by_source, divergence_pct=divergence_pct)
+    flags = _validate(consulted, figures_by_source, divergence_pct=divergence_pct,
+                      field_divergence=field_divergence)
     snap.provenance = provenance
     snap.flags = [f.describe() for f in flags]
     return MergeResult(snapshot=snap, provenance=provenance, flags=flags)

@@ -59,9 +59,11 @@ def build_adapters(settings: dict, cache: Cache) -> list[SourceAdapter]:
     fmp_cfg = src.get("fmp", {}) or {}
     if fmp_cfg.get("enabled", True) and fmp_cfg.get("api_key"):
         from .adapters.fmp import FmpAdapter
+        cap = fmp_cfg.get("max_fetches_per_run")
         adapters.append(FmpAdapter(
             cache, api_key=fmp_cfg.get("api_key", ""),
-            requests_per_sec=float(fmp_cfg.get("requests_per_sec", 4.0))))
+            requests_per_sec=float(fmp_cfg.get("requests_per_sec", 4.0)),
+            max_fetches=(int(cap) if cap is not None else None)))
 
     finnhub_cfg = src.get("finnhub", {}) or {}
     if finnhub_cfg.get("enabled", True) and finnhub_cfg.get("api_key"):
@@ -91,12 +93,14 @@ def _penalty_for(flags: list[ValidationFlag]) -> float:
 
 
 def enrich_snapshot(snap: TickerSnapshot, adapters: list[SourceAdapter],
-                    *, divergence_pct: float = 5.0):
+                    *, divergence_pct: float = 5.0,
+                    field_divergence: dict[str, float] | None = None):
     """Merge secondary sources onto ``snap``. Returns (merged_snapshot, flags)."""
     results = _gather(adapters, snap.ticker)
     if not results:
         return snap, []
-    mr = merge(snap, results, divergence_pct=divergence_pct)
+    mr = merge(snap, results, divergence_pct=divergence_pct,
+               field_divergence=field_divergence)
     out = mr.snapshot
     # If a secondary rescued a previously-missing statement, drop the stale
     # "incomplete data" error so the re-score can run.

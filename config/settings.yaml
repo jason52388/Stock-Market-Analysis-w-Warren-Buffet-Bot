@@ -80,6 +80,12 @@ sources:
     enabled: true
     api_key: ${FMP_API_KEY}       # inactive until set (free tier: 250 calls/day)
     requests_per_sec: 4
+    # FMP costs 4 calls per COLD ticker (3 statements + profile). Cap cold
+    # tickers per run so a full enrich stays under the 250/day free tier
+    # (55 x 4 = 220). Warm tickers (30-day statement cache) don't count, so
+    # steady-state weekly runs are far cheaper. Finalists are submitted before
+    # rescues, so they get first claim on the budget.
+    max_fetches_per_run: 55
   finnhub:                        # Finnhub — price/market-cap/shares cross-check
     enabled: true
     api_key: ${FINNHUB_API_KEY}   # inactive until set (free tier: 60 calls/min)
@@ -89,7 +95,15 @@ sources:
     enrich_top_n: 50              # validate this many top finalists
     rescue_gate_failures: true    # gap-fill names yfinance returned incomplete
     rescue_limit: 150
-    divergence_pct_flag: 5.0      # flag a key figure when sources differ by >5%
+    divergence_pct_flag: 5.0      # default tolerance — used for filing figures
+    # Per-field tolerance overrides. Filing figures (revenue/net income) stay at
+    # the strict 5% default; market cap & price legitimately differ across
+    # sources (real-time vs last close, different share-count basis), so they're
+    # looser to avoid false conflict flags / demotions.
+    divergence_pct_by_field:
+      market_cap: 10.0
+      price: 10.0
+      shares_outstanding: 10.0
 
 # Throttle control for yfinance/Yahoo. Yahoo rate-limits hard and, worse, often
 # answers a throttled request with a SILENT empty frame (no error) — which is

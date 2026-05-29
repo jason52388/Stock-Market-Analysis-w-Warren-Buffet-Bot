@@ -165,6 +165,27 @@ class TestMergeValidation:
         rev = [f for f in mr.flags if f.field == "revenue_latest"]
         assert rev and rev[0].kind == "unconfirmed" and rev[0].severity == "high"
 
+    def test_market_cap_uses_looser_field_threshold(self):
+        base = self._base(mcap=1000)
+        finnhub = SourceResult("finnhub", quote={"market_cap": 1080})  # ~7.7% spread
+        # Flat 5% would flag; the per-field 10% override must NOT.
+        mr = merge(base, [finnhub], divergence_pct=5.0,
+                   field_divergence={"market_cap": 10.0})
+        assert all(f.field != "market_cap" for f in mr.flags)
+        # A 15%+ gap still exceeds the looser threshold and flags.
+        mr2 = merge(self._base(mcap=1000),
+                    [SourceResult("finnhub", quote={"market_cap": 1200})],
+                    divergence_pct=5.0, field_divergence={"market_cap": 10.0})
+        assert any(f.field == "market_cap" and f.kind == "conflict" for f in mr2.flags)
+
+    def test_filings_still_use_strict_default_threshold(self):
+        # Revenue differs ~7% with the strict 5% default (no override) -> flags.
+        edgar = SourceResult("edgar", income=_df(
+            {"Total Revenue": [100, 110, 129], "Net Income": [10, 11, 12]}))
+        mr = merge(self._base(mcap=1000), [edgar], divergence_pct=5.0,
+                   field_divergence={"market_cap": 10.0})
+        assert any(f.field == "revenue_latest" for f in mr.flags)
+
     def test_medium_field_unconfirmed_is_suppressed(self):
         # Finnhub (capable of price) is consulted but returns no price -> price is
         # an unconfirmed MEDIUM field, which must NOT be flagged (not actionable).
@@ -219,6 +240,34 @@ class TestEnrich:
         snap = TickerSnapshot(ticker="X", info={})
         merged, flags = enrich_snapshot(snap, [])
         assert merged is snap and flags == []
+
+
+class TestFmpBudget:
+    def _adapter(self, tmp_path, cap):
+        from warren_bot.data.adapters.fmp import FmpAdapter
+        from warren_bot.data.cache import Cache
+        return FmpAdapter(Cache(tmp_path / "f.sqlite", 3600), api_key="k", max_fetches=cap)
+
+    def test_cold_tickers_capped_per_run(self, tmp_path):
+        a = self._adapter(tmp_path, cap=1)
+        with patch("warren_bot.data.adapters.fmp.get_json",
+                   return_value=[{"date": "2023-12-31", "revenue": 100, "netIncome": 20}]):
+            r1 = a.fetch("AAA")   # cold -> consumes the only budget unit
+            r2 = a.fetch("BBB")   # cold -> over budget -> skipped
+        assert r1.has_statements
+        assert r2.error == "fmp budget exhausted"
+        a.cache.close()
+
+    def test_warm_ticker_bypasses_budget(self, tmp_path):
+        a = self._adapter(tmp_path, cap=0)  # zero budget for cold tickers
+        for ns, field in [("fmp_income", "revenue"), ("fmp_balance", "totalAssets"),
+                          ("fmp_cashflow", "operatingCashFlow")]:
+            a.cache.set(ns, "AAA", [{"date": "2023-12-31", field: 100}])
+        with patch("warren_bot.data.adapters.fmp.get_json",
+                   return_value=[{"date": "2023-12-31"}]):  # profile only
+            r = a.fetch("AAA")    # warm -> served despite zero budget
+        assert r.has_statements
+        a.cache.close()
 
 
 def test_effective_total_applies_penalty():

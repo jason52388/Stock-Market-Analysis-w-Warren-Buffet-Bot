@@ -174,6 +174,8 @@ def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list
         return picks
 
     divergence = float(merge_cfg.get("divergence_pct_flag", 5.0))
+    field_div = {k: float(v) for k, v in
+                 (merge_cfg.get("divergence_pct_by_field", {}) or {}).items()}
     top_n = int(merge_cfg.get("enrich_top_n", 50))
     scorable = [p for p in picks if not p.score.error]
     targets: dict[str, Pick] = {p.score.ticker: p for p in scorable[:top_n]}
@@ -190,7 +192,8 @@ def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list
 
     def _enrich_one(ticker: str) -> tuple[str, Pick]:
         snap = fetcher.get(ticker)  # warm cache hit
-        merged, flags = enrich_snapshot(snap, adapters, divergence_pct=divergence)
+        merged, flags = enrich_snapshot(snap, adapters, divergence_pct=divergence,
+                                        field_divergence=field_div)
         ts = score_ticker(merged, settings)
         ts.corroboration_penalty = _penalty_for(flags)
         thesis = generate_thesis(ts, merged.info)
