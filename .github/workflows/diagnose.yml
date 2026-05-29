@@ -1,0 +1,38 @@
+name: VPS diagnostics
+
+# One-off troubleshooting: dumps container status, Caddy logs, the configured
+# hostname, port bindings, and a local curl. Read-only — changes nothing.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect VPS over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd "${{ secrets.VPS_PATH }}"
+            echo "===== container status ====="
+            docker compose ps
+            echo ""
+            echo "===== SITE_HOSTNAME in .env ====="
+            grep SITE_HOSTNAME .env || echo "(not set)"
+            echo ""
+            echo "===== what is listening on 80/443 ====="
+            (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ':80|:443' || echo "(nothing on 80/443)"
+            echo ""
+            echo "===== caddy logs (last 40) ====="
+            docker compose logs --tail=40 caddy
+            echo ""
+            echo "===== local HTTP probe ====="
+            curl -sS -I http://localhost 2>&1 | head -20 || echo "curl http failed"
+            echo ""
+            echo "===== local HTTPS probe (ignore cert) ====="
+            curl -sS -k -I https://localhost 2>&1 | head -20 || echo "curl https failed"
