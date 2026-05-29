@@ -1,7 +1,19 @@
-# SITE_HOSTNAME is the public hostname Caddy serves. Set in .env on the VPS.
-# Caddy auto-provisions a Let's Encrypt cert as long as the hostname resolves
-# to this VPS over public DNS.
-{$SITE_HOSTNAME} {
+# Serves the site on both the bare domain and www. The apex redirects to www
+# (the canonical address), so links and the cert stay consistent. Caddy
+# auto-provisions Let's Encrypt certs for BOTH names — which requires BOTH
+# yalamanstockmarket.com and www.yalamanstockmarket.com to have DNS A records
+# pointing at this VPS (177.7.58.66).
+#
+# Hostnames are hardcoded (not {$SITE_HOSTNAME}) so an empty/missing env var
+# can never produce an invalid empty site address that crashes Caddy.
+
+# Bare domain -> redirect to www, preserving the path/query.
+yalamanstockmarket.com {
+    redir https://www.yalamanstockmarket.com{uri} permanent
+}
+
+# www -> the actual site.
+www.yalamanstockmarket.com {
     root * /srv
     encode gzip
 
