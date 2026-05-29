@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Iterable
 
 from jinja2 import Environment
 
 from ..analysis.statement_utils import dividend_yield_pct
+from ..config import repo_root
 from ..hedge_funds.dataroma import HedgeFundView, ManagerPortfolio, ViewKind
 from ..news.briefing import Briefing
 from ..news.stock_news import NewsItem
@@ -31,6 +33,87 @@ def _round(v: Any, n: int) -> float | None:
     if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
         return None
     return round(f, n)
+
+
+def _format_market_cap(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        cap = float(value)
+    except (TypeError, ValueError):
+        return None
+    if cap <= 0:
+        return None
+    if cap >= 1_000_000_000_000:
+        return f"${cap / 1_000_000_000_000:.2f}T"
+    if cap >= 1_000_000_000:
+        return f"${cap / 1_000_000_000:.1f}B"
+    if cap >= 1_000_000:
+        return f"${cap / 1_000_000:.0f}M"
+    return f"${cap:,.0f}"
+
+
+_EXCHANGE_LABELS = {
+    "NMS": "Nasdaq",
+    "NGM": "Nasdaq",
+    "NCM": "Nasdaq",
+    "NAS": "Nasdaq",
+    "NYQ": "NYSE",
+    "NYS": "NYSE",
+    "ASE": "NYSE American",
+    "AMEX": "NYSE American",
+    "PCX": "NYSE Arca",
+    "PNK": "OTC",
+    "OTC": "OTC",
+    "TOR": "TSX",
+    "VAN": "TSX Venture",
+    "LSE": "LSE",
+    "JPX": "Tokyo",
+    "HKG": "Hong Kong",
+}
+
+
+def _exchange_label(p: Pick) -> str | None:
+    info = p.snap_info or {}
+    raw = info.get("fullExchangeName") or info.get("exchange") or info.get("market")
+    if not raw:
+        return None
+    raw_s = str(raw).strip()
+    return _EXCHANGE_LABELS.get(raw_s.upper(), raw_s)
+
+
+def _market_cap_label(p: Pick) -> str | None:
+    return _format_market_cap((p.snap_info or {}).get("marketCap"))
+
+
+def _read_ticker_file(path: str) -> set[str]:
+    p = repo_root() / path
+    if not p.exists():
+        return set()
+    out: set[str] = set()
+    for line in p.read_text().splitlines():
+        ticker = line.strip().upper()
+        if ticker and not ticker.startswith("#"):
+            out.add(ticker)
+    return out
+
+
+@lru_cache(maxsize=1)
+def _universe_membership_sets() -> dict[str, set[str]]:
+    return {
+        "S&P 500": _read_ticker_file("config/universe_sp500.txt"),
+        "ADR": _read_ticker_file("config/universe_adrs.txt"),
+        "International": _read_ticker_file("config/universe_international.txt"),
+        "Watchlist": _read_ticker_file("config/watchlist.txt"),
+    }
+
+
+def _listing_badges(p: Pick) -> list[str]:
+    ticker = p.score.ticker.upper()
+    return [
+        label for label, tickers in _universe_membership_sets().items()
+        if ticker in tickers
+    ]
 
 
 def build_cockpit_data(
@@ -988,6 +1071,11 @@ composite = buffett_score<br>
       </div>
       <div class="sector">{{ r.pick.score.sector or 'Unknown sector' }}
         {% if r.pick.score.valuation.price %} · ${{ '%.2f'|format(r.pick.score.valuation.price) }}{% endif %}
+        {% set r_mcap = market_cap_label(r.pick) %}
+        {% set r_exchange = exchange_label(r.pick) %}
+        {% if r_mcap %} · Market cap {{ r_mcap }}{% endif %}
+        {% if r_exchange %} · {{ r_exchange }}{% endif %}
+        {% for badge in listing_badges(r.pick) %} · {{ badge }}{% endfor %}
         {% if r.pick.score.valuation.margin_of_safety_pct is not none %} · MoS {{ '%.0f'|format(r.pick.score.valuation.margin_of_safety_pct) }}%{% endif %}
       </div>
       <div class="rec-reasons">
@@ -2316,8 +2404,13 @@ _PICK_CARD = r"""
     <span class="score-pill {{ bucket }}">{{ '%.1f'|format(p.score.total) }}</span>
   </div>
   <div class="facts">
+    {% set mcap = market_cap_label(p) %}
+    {% set exchange = exchange_label(p) %}
     <span>{{ p.score.sector or 'Unknown sector' }}</span>
     {% if p.score.valuation.price %}<span>${{ '%.2f'|format(p.score.valuation.price) }}</span>{% endif %}
+    {% if mcap %}<span>Market cap {{ mcap }}</span>{% endif %}
+    {% if exchange %}<span>{{ exchange }}</span>{% endif %}
+    {% for badge in listing_badges(p) %}<span>{{ badge }}</span>{% endfor %}
     {% if p.score.valuation.fcf_yield_pct is not none %}<span>FCF yield {{ '%.1f'|format(p.score.valuation.fcf_yield_pct) }}%</span>{% endif %}
     {% if p.score.valuation.margin_of_safety_pct is not none %}<span>MoS {{ '%.0f'|format(p.score.valuation.margin_of_safety_pct) }}%</span>{% endif %}
   </div>
@@ -2408,6 +2501,9 @@ def render_dashboard(
     env.globals["dim_score"] = _dim_score
     env.globals["stock_news"] = stock_news
     env.globals["full_description"] = _full_description
+    env.globals["market_cap_label"] = _market_cap_label
+    env.globals["exchange_label"] = _exchange_label
+    env.globals["listing_badges"] = _listing_badges
     macros = env.from_string(_PICK_CARD).module
     template = env.from_string(_TEMPLATE)
     template.globals["pick_card"] = macros.pick_card
