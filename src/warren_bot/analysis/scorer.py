@@ -172,25 +172,31 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
                    crit_cfg["current_ratio"], "x"),
     ])
 
-    yrs = growth.years_in_window or 0
-    # Scale "profitable years" target down if yfinance only returns ~4 yrs of statements.
-    # Excellent = all years; target = all-but-one.
-    yrs_cfg = {"target": max(1, yrs - 1), "excellent": max(1, yrs)} if yrs else \
+    # Scale each count-based target to the history that exists for THAT statement.
+    # Net income and FCF often have shorter runways than revenue in yfinance, so
+    # judge "profitable years" against the net-income window and "FCF+ years"
+    # against the FCF window — not the widest statement. Excellent = all years;
+    # target = all-but-one. When a series is entirely absent the cell is 'na'
+    # (excluded), not a hard 0.
+    np_yrs = growth.net_years or 0
+    fcf_yrs = growth.fcf_years or 0
+    yrs_cfg = {"target": max(1, np_yrs - 1), "excellent": max(1, np_yrs)} if np_yrs else \
         crit_cfg["years_profitable"]
-    fcf_cfg = {"target": max(1, yrs - 1), "excellent": max(1, yrs)} if yrs else \
+    fcf_cfg = {"target": max(1, fcf_yrs - 1), "excellent": max(1, fcf_yrs)} if fcf_yrs else \
         crit_cfg["fcf_positive_years"]
-    yp_cell = _make_cell("years_profitable", f"Profitable yrs (of {yrs or 10})",
-                         float(growth.years_profitable) if yrs else None, yrs_cfg)
-    fcf_cell = _make_cell("fcf_positive_years", f"FCF+ years (of {yrs or 10})",
-                          float(growth.fcf_positive_years) if yrs else None, fcf_cfg)
+    yp_cell = _make_cell("years_profitable", f"Profitable yrs (of {np_yrs or 10})",
+                         float(growth.years_profitable) if np_yrs else None, yrs_cfg)
+    fcf_cell = _make_cell("fcf_positive_years", f"FCF+ years (of {fcf_yrs or 10})",
+                          float(growth.fcf_positive_years) if fcf_yrs else None, fcf_cfg)
     # Consistency needs a long runway to mean anything. The dynamic target above
     # would otherwise hand a perfect "4/4 profitable" the same score as a proven
     # 10-year compounder. Damp the count-based cells toward the full target
-    # window (10y) so short histories can't claim full marks on a thin record.
-    hist_factor = min(1.0, yrs / float(crit_cfg["years_profitable"]["excellent"])) if yrs else 0.0
-    for c in (yp_cell, fcf_cell):
+    # window (10y) — using each cell's OWN series length — so short histories
+    # can't claim full marks on a thin record.
+    full_window = float(crit_cfg["years_profitable"]["excellent"])
+    for c, c_yrs in ((yp_cell, np_yrs), (fcf_cell, fcf_yrs)):
         if c.value is not None:
-            c.score *= hist_factor
+            c.score *= min(1.0, c_yrs / full_window) if c_yrs else 0.0
             c.status = _status(c.score, c.value)
     consistency = DimensionScore("Consistency", 0, [
         yp_cell,
@@ -221,22 +227,37 @@ def score_ticker(snap: TickerSnapshot, settings: dict) -> TickerScore:
     ])
 
     dims = [moat, strength, consistency, val_dim, cap_alloc]
+    dim_weights = [
+        weights["moat"],
+        weights["strength"],
+        weights["consistency"],
+        weights["valuation"],
+        weights["capital_allocation"],
+    ]
     # Average only the cells we actually have data for. A missing metric used to
     # count as a hard 0, which made "no data" indistinguishable from "terrible
     # fundamentals" and silently deflated otherwise-strong names (e.g. a debt-
     # free company has no interest-coverage figure). 'na' cells are now excluded;
     # data sparsity is surfaced separately via `data_coverage` below.
-    for d in dims:
+    #
+    # The same logic must hold at the dimension level: a dimension with NO usable
+    # cells (e.g. no cash-flow statement -> entire Valuation block is n/a) would
+    # otherwise contribute weight*0 to the total and crater an otherwise-strong
+    # name. Renormalize the weighted total over only the dimensions that carry
+    # data, so a missing dimension neither helps nor hurts — it's simply absent
+    # (and still flagged via data_coverage / tier gating downstream).
+    weighted_sum = 0.0
+    active_weight = 0.0
+    for d, w in zip(dims, dim_weights):
         scored = [c.score for c in d.cells if c.status != "na"]
-        d.score = sum(scored) / len(scored) if scored else 0.0
+        if scored:
+            d.score = sum(scored) / len(scored)
+            weighted_sum += w * d.score
+            active_weight += w
+        else:
+            d.score = 0.0
 
-    total = (
-        weights["moat"] * moat.score
-        + weights["strength"] * strength.score
-        + weights["consistency"] * consistency.score
-        + weights["valuation"] * val_dim.score
-        + weights["capital_allocation"] * cap_alloc.score
-    )
+    total = weighted_sum / active_weight if active_weight else 0.0
 
     all_cells = [c for d in dims for c in d.cells]
     scored_cells = [c for c in all_cells if c.status != "na"]
