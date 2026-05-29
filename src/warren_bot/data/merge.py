@@ -145,8 +145,11 @@ def _validate(consulted: set[str], figures_by_source: dict[str, dict],
             spread = (max(reported.values()) - min(reported.values())) / abs(med) * 100.0
             if spread > divergence_pct:
                 flags.append(ValidationFlag(fld, "conflict", severity, reported, spread))
-        else:
-            # capable second source(s) existed but didn't corroborate the value
+        elif severity == "high":
+            # A capable second source existed but didn't corroborate a KEY figure.
+            # We only raise this for high-severity fields (market cap, revenue, net
+            # income); a second source not echoing price/shares is common and not
+            # actionable, so medium 'unconfirmed' is suppressed to keep the signal clean.
             flags.append(ValidationFlag(fld, "unconfirmed", severity, reported))
     return flags
 

@@ -165,6 +165,13 @@ class TestMergeValidation:
         rev = [f for f in mr.flags if f.field == "revenue_latest"]
         assert rev and rev[0].kind == "unconfirmed" and rev[0].severity == "high"
 
+    def test_medium_field_unconfirmed_is_suppressed(self):
+        # Finnhub (capable of price) is consulted but returns no price -> price is
+        # an unconfirmed MEDIUM field, which must NOT be flagged (not actionable).
+        finnhub = SourceResult("finnhub", quote={"market_cap": 1010})
+        mr = merge(self._base(mcap=1000), [finnhub], divergence_pct=5.0)
+        assert all(f.field != "price" for f in mr.flags)
+
     def test_base_is_not_mutated(self):
         base = self._base(mcap=1000)
         finnhub = SourceResult("finnhub", quote={"market_cap": 1600})
