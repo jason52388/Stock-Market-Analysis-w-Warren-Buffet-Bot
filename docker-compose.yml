@@ -4,6 +4,12 @@
 # NOTE: We use explicit `environment:` blocks with ${VAR} substitution instead
 # of `env_file:`. Hostinger's hosted compose parser silently drops env_file
 # directives — vars come back empty at runtime with no error.
+#
+# NOTE: Data dirs use *named volumes*, not bind mounts. Hostinger's Docker UI
+# builds in /tmp/... and runs from a different host path that only has the
+# compose file, so relative bind mounts (`./out:/app/out`) point at empty/
+# non-existent paths and either fail outright or stay empty across rebuilds.
+# Named volumes are managed by Docker itself and survive rebuilds reliably.
 
 services:
   bot:
@@ -22,14 +28,16 @@ services:
       - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
     volumes:
       # yfinance SQLite cache survives container rebuilds
-      - ./.cache:/app/.cache
-      # Generated HTML/CSV — served read-only by Caddy
-      - ./out:/app/out
+      - warren_cache:/app/.cache
+      # Generated HTML/CSV — shared read-only with Caddy below
+      - warren_out:/app/out
     networks:
       - warren
 
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: .
+      dockerfile: deploy/Caddy.Dockerfile
     container_name: warren-caddy
     restart: unless-stopped
     ports:
@@ -39,8 +47,8 @@ services:
     environment:
       - SITE_HOSTNAME=${SITE_HOSTNAME}
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./out:/srv:ro
+      # Same named volume as the bot — Caddy serves what the bot writes.
+      - warren_out:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -53,5 +61,7 @@ networks:
     driver: bridge
 
 volumes:
+  warren_cache:
+  warren_out:
   caddy_data:
   caddy_config:

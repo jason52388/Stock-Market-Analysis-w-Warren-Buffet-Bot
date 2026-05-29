@@ -44,7 +44,7 @@ cat > "$INDEX" <<HTML
 <body>
   <h1>Warren Buffett Bot</h1>
   <p class="sub">Weekly screen of S&amp;P 500 + ADRs against Buffett/Munger criteria.</p>
-  <a class="latest" href="preview.html">View latest run &rarr;</a>
+  <a class="latest" href="dashboard.html">View latest run &rarr;</a>
   <h2>Archive</h2>
   <ul>
 $archive_items  </ul>

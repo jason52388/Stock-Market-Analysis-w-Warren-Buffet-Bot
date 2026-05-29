@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+# Belt-and-suspenders TZ default — docker-compose.yml passes TZ in via env, but
+# this protects standalone `docker run` invocations (debugging, one-off scripts)
+# from silently falling back to UTC and shifting the cron schedule by hours.
+ENV TZ=America/New_York
+
 # System deps: cron for scheduling, tzdata for TZ env var, ca-certs for SMTP TLS
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cron \

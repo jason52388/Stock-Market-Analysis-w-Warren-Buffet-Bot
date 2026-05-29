@@ -9,8 +9,12 @@
     # after each weekly run).
     try_files {path} /index.html
 
-    # Browseable archive directory.
-    file_server browse
+    # Only the archive directory gets a browseable index; everywhere else
+    # serves explicit files only. This avoids exposing anything that lands in
+    # out/ (debug CSVs, scratch files) on the public root.
+    @archive path /archive /archive/*
+    file_server @archive browse
+    file_server
 
     # Light caching for HTML (so a redeploy shows new content within a minute).
     header /*.html Cache-Control "public, max-age=60"

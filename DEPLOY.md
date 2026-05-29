@@ -32,7 +32,7 @@ curl -I http://localhost           # Caddy should answer
 ```
 
 Hit `https://<your SITE_HOSTNAME>` in a browser — you'll see the landing page.
-There won't be a `preview.html` yet until either cron fires or you trigger a
+There won't be a `dashboard.html` yet until either cron fires or you trigger a
 manual run (next section).
 
 ## Triggering a manual run
@@ -42,7 +42,7 @@ docker compose exec bot warren-bot run
 ```
 
 That runs the bot inside the container exactly as cron would, including writing
-`out/preview.html`, archiving it, sending the email, and updating Notion. You
+`out/dashboard.html`, archiving it, sending the email, and updating Notion. You
 can also pass `--limit 50` to do a fast smoke test.
 
 ## Where things live
@@ -50,10 +50,23 @@ can also pass `--limit 50` to do a fast smoke test.
 | What                           | Where                                              |
 |--------------------------------|----------------------------------------------------|
 | Bot logs                       | `docker compose logs bot` (tails `/var/log/warren.log`) |
-| Latest HTML digest             | `out/preview.html` on the host                     |
-| Archived runs                  | `out/archive/YYYY-MM-DD.html`                      |
-| yfinance cache                 | `.cache/` on the host (survives rebuilds)          |
+| Latest HTML digest             | `warren_out` Docker volume → `/app/out/dashboard.html` inside the bot container |
+| Archived runs                  | `warren_out` volume → `/app/out/archive/YYYY-MM-DD.html` |
+| yfinance cache                 | `warren_cache` Docker volume (survives rebuilds)   |
 | Caddy TLS certs                | `caddy_data` Docker volume (don't delete it)       |
+
+To peek at the generated HTML files from the host:
+
+```bash
+docker compose exec bot ls /app/out
+docker compose exec bot cat /app/out/dashboard.html | head
+```
+
+Or copy a file out for local inspection:
+
+```bash
+docker compose cp bot:/app/out/dashboard.html ./dashboard.html
+```
 
 ## Auto-deploy from GitHub
 
@@ -123,7 +136,7 @@ over the open internet, and ports 80 + 443 need to be reachable. Hostinger's
 firewall usually allows these by default; check the VPS panel if not.
 `docker compose logs caddy` will show what Let's Encrypt is complaining about.
 
-**Site shows a 404 for /preview.html.** The first cron run hasn't happened yet.
+**Site shows a 404 for /dashboard.html.** The first cron run hasn't happened yet.
 Run `docker compose exec bot warren-bot run` once to generate it.
 
 **Want to stop the GitHub Actions backup workflow entirely.** Delete
