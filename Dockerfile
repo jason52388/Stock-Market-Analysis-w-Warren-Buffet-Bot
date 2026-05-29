@@ -25,11 +25,14 @@ RUN uv pip install --system -e .
 # Config + universe files (these change rarely)
 COPY config/ ./config/
 
+# Deploy scripts (build-index.sh is invoked by the cron line at /app/deploy/)
+COPY deploy/ ./deploy/
+
 # Cron + entrypoint
 COPY deploy/crontab /etc/cron.d/warren-bot
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod 0644 /etc/cron.d/warren-bot \
- && chmod 0755 /entrypoint.sh \
+ && chmod 0755 /entrypoint.sh /app/deploy/build-index.sh \
  && touch /var/log/warren.log
 
 # .cache and out are bind-mounted from the host; create empty mount points
