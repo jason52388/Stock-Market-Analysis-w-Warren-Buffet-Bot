@@ -17,18 +17,26 @@ www.yalamanstockmarket.com {
     root * /srv
     encode gzip
 
-    # The site root is the latest run: build-index.sh copies the freshest
-    # dashboard to index.html after each weekly run, so "/" shows it directly.
-    try_files {path} /index.html
+    # Archive first, in its own handle block. This MUST come before the
+    # site-root fallback below: a bare `try_files {path} /index.html` rewrites
+    # /archive/ to /index.html (try_files doesn't match the directory), and
+    # since matchers see the rewritten path, the archive index never gets
+    # served. An isolated `handle` is mutually exclusive, so /archive/ is
+    # routed here and file_server serves archive/index.html (the "Past runs"
+    # page built by build-index.sh), with `browse` as a fallback listing for
+    # any sub-path without an index.
+    handle /archive /archive/* {
+        file_server browse
+    }
 
-    # The archive directory serves its own formatted index.html (the "Past
-    # runs" page, also built by build-index.sh); `browse` stays as a fallback
-    # directory listing for any sub-path without an index. Everywhere else
-    # serves explicit files only, so stray files in out/ (debug CSVs, scratch
-    # files) aren't exposed on the public root.
-    @archive path /archive /archive/*
-    file_server @archive browse
-    file_server
+    # Everything else: the site root is the latest run — build-index.sh copies
+    # the freshest dashboard to index.html after each run, so "/" shows it
+    # directly. Unknown paths fall back to it; explicit files are served as-is,
+    # so stray files in out/ (debug CSVs, scratch files) aren't exposed.
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
 
     # Light caching for HTML (so a redeploy shows new content within a minute).
     header /*.html Cache-Control "public, max-age=60"
