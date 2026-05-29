@@ -19,6 +19,9 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd "${{ secrets.VPS_PATH }}"
+            echo "===== VPS public IP (point your DNS A records here) ====="
+            curl -sS --connect-timeout 10 https://api.ipify.org 2>&1 || curl -sS ifconfig.me 2>&1 || echo "(could not determine)"
+            echo ""
             echo "===== container status ====="
             docker compose ps
             echo ""
