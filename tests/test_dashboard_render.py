@@ -56,6 +56,9 @@ class TestAiDisruptionData:
         data = build_ai_disruption_data(picks)
 
         assert [row["ticker"] for row in data["positive"]] == ["AICLOUD"]
+        assert [row["ticker"] for row in data["signals"]] == ["AICLOUD"]
+        assert "artificial intelligence" in data["signals"][0]["aiSignals"]
+        assert "cloud" in data["signals"][0]["positiveSignals"]
         assert data["negative"] == []
 
     def test_negative_requires_ai_context_and_exposure(self):
@@ -69,3 +72,5 @@ class TestAiDisruptionData:
 
         assert data["positive"] == []
         assert [row["ticker"] for row in data["negative"]] == ["AISTAFF"]
+        assert [row["ticker"] for row in data["signals"]] == ["AISTAFF"]
+        assert "staffing" in data["signals"][0]["negativeSignals"]

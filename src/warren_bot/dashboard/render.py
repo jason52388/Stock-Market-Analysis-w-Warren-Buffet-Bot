@@ -360,6 +360,9 @@ def build_ai_disruption_data(
             "price": _round(info.get("regularMarketPrice") or s.valuation.price, 2),
             "mos": _round(s.valuation.margin_of_safety_pct, 0),
             "thesis": thesis,
+            "aiSignals": list(dict.fromkeys(ai_hits)),
+            "positiveSignals": list(dict.fromkeys(pos_hits)),
+            "negativeSignals": list(dict.fromkeys(neg_hits)),
             "news": [{
                 "title": n.title,
                 "url": n.url,
@@ -398,6 +401,11 @@ def build_ai_disruption_data(
 
     positive.sort(key=lambda x: (len(x["reasons"]), x["score"] or 0), reverse=True)
     negative.sort(key=lambda x: (len(x["reasons"]), x["score"] or 0), reverse=True)
+    signal_rows = sorted(
+        positive + negative,
+        key=lambda x: (x["impact"], len(x["reasons"]), x["score"] or 0),
+        reverse=True,
+    )
 
     ai_articles = []
     if briefing:
@@ -417,6 +425,7 @@ def build_ai_disruption_data(
     return {
         "positive": positive[:20],
         "negative": negative[:20],
+        "signals": signal_rows[:40],
         "articles": ai_articles[:8],
     }
 
@@ -871,6 +880,20 @@ table.kpi td.na { color: var(--na); }
 .reason-tags .tag { background: #f8fafc; border: 1px solid var(--line); }
 .disrupt-news .news-item { margin: 0; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .disrupt-news .news-item:last-child { border-bottom: none; }
+.signal-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px;
+                     background: var(--card); }
+table.signal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.signal-table th { background: #f8fafc; color: var(--muted); text-transform: uppercase;
+                        letter-spacing: .04em; font-size: 10.5px; text-align: left;
+                        padding: 9px 10px; border-bottom: 1px solid var(--line); }
+table.signal-table td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.signal-table tr:last-child td { border-bottom: none; }
+table.signal-table .stock-cell { min-width: 150px; }
+table.signal-table .stock-cell .name { display: block; margin-top: 2px; font-size: 12px; }
+table.signal-table .impact-cell { min-width: 120px; }
+.signal-list { display: flex; flex-wrap: wrap; gap: 5px; min-width: 180px; }
+.signal-list .tag { background: #f8fafc; border: 1px solid var(--line); }
+.signal-list .none { color: var(--muted); font-style: italic; }
 .ai-briefing-strip { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
                      padding: 14px 16px; margin-top: 18px; }
 .ai-briefing-strip h3 { margin: 0 0 8px; font-size: 14px; }
@@ -1425,6 +1448,7 @@ composite = buffett_score<br>
   <div class="sub-tab-bar">
     <button class="sub-tab-btn active" data-subtab="ai-positive">Positive disruption</button>
     <button class="sub-tab-btn" data-subtab="ai-negative">Negative disruption</button>
+    <button class="sub-tab-btn" data-subtab="ai-signals">Signals by stock</button>
   </div>
 
   {% for key, label, rows in [
@@ -1489,6 +1513,72 @@ composite = buffett_score<br>
     {% endif %}
   </div>
   {% endfor %}
+
+  <div class="sub-tab-panel" data-subtab="ai-signals">
+    {% if ai_disruption.signals %}
+    <div class="signal-table-wrap">
+      <table class="signal-table">
+        <thead>
+          <tr>
+            <th>Stock</th>
+            <th>Impact</th>
+            <th>AI context</th>
+            <th>Positive signals</th>
+            <th>Negative signals</th>
+            <th>Watch item</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in ai_disruption.signals %}
+          <tr>
+            <td class="stock-cell">
+              <span class="ticker">{{ item.ticker }}</span>
+              <span class="name">{{ item.name }}</span>
+              <div class="disrupt-meta">{{ item.sector }}</div>
+            </td>
+            <td class="impact-cell">
+              <span class="impact-pill {{ item.impact|lower }}">{{ item.impact }}</span>
+              <div class="disrupt-meta">{{ item.scoreLabel }}</div>
+            </td>
+            <td>
+              <div class="signal-list">
+                {% for r in item.aiSignals %}
+                <span class="tag">{{ r }}</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td>
+              <div class="signal-list">
+                {% if item.positiveSignals %}
+                  {% for r in item.positiveSignals %}
+                  <span class="tag">{{ r }}</span>
+                  {% endfor %}
+                {% else %}
+                  <span class="none">No direct positive signal</span>
+                {% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="signal-list">
+                {% if item.negativeSignals %}
+                  {% for r in item.negativeSignals %}
+                  <span class="tag">{{ r }}</span>
+                  {% endfor %}
+                {% else %}
+                  <span class="none">No direct negative signal</span>
+                {% endif %}
+              </div>
+            </td>
+            <td class="disrupt-copy">{{ item.watch }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="empty">No AI disruption signals found in this run.</div>
+    {% endif %}
+  </div>
 
   {% if ai_disruption.articles %}
   <div class="ai-briefing-strip">
