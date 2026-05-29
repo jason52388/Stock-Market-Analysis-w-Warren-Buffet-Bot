@@ -43,6 +43,27 @@ def _print_pick(p: Pick) -> None:
     click.echo(p.thesis.as_markdown())
 
 
+def _data_quality_warning(picks: list[Pick]) -> str | None:
+    if not picks:
+        return None
+    errored = [p for p in picks if p.score.error]
+    mcap_none = [
+        p for p in errored
+        if "below min market cap" in (p.score.error or "")
+        and "mcap=None" in (p.score.error or "")
+    ]
+    if len(mcap_none) < max(25, int(len(picks) * 0.10)):
+        return None
+    clean = len(picks) - len(errored)
+    return (
+        "WARNING: This run has "
+        f"{len(mcap_none)}/{len(picks)} tickers with missing Yahoo market cap "
+        f"(clean scores: {clean}). The picks may be alphabet-biased/incomplete; "
+        "rerun after the transient cache expires or use --force-refresh before "
+        "trusting the dashboard."
+    )
+
+
 @click.group()
 @click.option("--verbose", is_flag=True, default=False)
 @click.pass_context
@@ -107,6 +128,8 @@ def run(
     surfaced = strong + angles + partial
     click.echo(f"Scored {len(picks)} tickers: {len(strong)} strong, "
                f"{len(angles)} angles, {len(partial)} partial")
+    if warning := _data_quality_warning(picks):
+        click.echo(click.style(warning, fg="yellow"), err=True)
 
     out_csv = repo_root() / csv_out if not csv_out.is_absolute() else csv_out
     write_csv(picks, out_csv)

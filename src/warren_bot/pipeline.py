@@ -194,7 +194,7 @@ def write_csv(picks: list[Pick], out_path: Path) -> None:
         w.writerow([
             "ticker", "name", "sector", "total",
             "moat", "strength", "consistency", "valuation", "cap_alloc",
-            "price", "fcf_yield_pct", "margin_of_safety_pct", "error",
+            "data_coverage", "price", "fcf_yield_pct", "margin_of_safety_pct", "error",
         ])
         for p in picks:
             s = p.score
@@ -206,6 +206,7 @@ def write_csv(picks: list[Pick], out_path: Path) -> None:
                 round(dim.get("Consistency", 0), 1),
                 round(dim.get("Valuation / Margin of Safety", 0), 1),
                 round(dim.get("Capital Allocation", 0), 1),
+                getattr(s, "data_coverage", ""),
                 s.valuation.price,
                 s.valuation.fcf_yield_pct,
                 s.valuation.margin_of_safety_pct,

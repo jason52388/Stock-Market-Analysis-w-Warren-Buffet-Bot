@@ -54,7 +54,7 @@ def _fake_pick(ticker: str, total: float, *, error: str | None = None):
         ratios=None, growth=None, valuation=SimpleNamespace(
             price=100.0, fcf_yield_pct=None, margin_of_safety_pct=None,
         ),
-        error=error,
+        error=error, data_coverage=0.85,
     )
     return SimpleNamespace(score=score, thesis=None, snap_info={})
 
@@ -113,7 +113,7 @@ class TestWriteCsv:
                 valuation=SimpleNamespace(
                     price=150.0, fcf_yield_pct=5.5, margin_of_safety_pct=20.0,
                 ),
-                error=None,
+                error=None, data_coverage=0.75,
             )
             return SimpleNamespace(score=score, thesis=None, snap_info={})
 
@@ -122,5 +122,29 @@ class TestWriteCsv:
 
         lines = out.read_text().splitlines()
         assert lines[0].startswith("ticker,name,sector,total")
+        assert "data_coverage" in lines[0]
         assert any("AAPL" in line and "78.5" in line for line in lines[1:])
         assert any("MSFT" in line for line in lines[1:])
+
+
+class TestRunQualityWarning:
+    def test_warns_when_missing_market_cap_errors_dominate(self):
+        from warren_bot.cli import _data_quality_warning
+
+        picks = [
+            _fake_pick(f"BAD{i}", 0, error="below min market cap (mcap=None)")
+            for i in range(30)
+        ] + [_fake_pick("OK", 80)]
+
+        warning = _data_quality_warning(picks)
+
+        assert warning is not None
+        assert "alphabet-biased" in warning
+
+    def test_no_warning_for_small_number_of_transient_errors(self):
+        from warren_bot.cli import _data_quality_warning
+
+        picks = [_fake_pick("BAD", 0, error="below min market cap (mcap=None)")]
+        picks += [_fake_pick(f"OK{i}", 80) for i in range(30)]
+
+        assert _data_quality_warning(picks) is None
