@@ -1,0 +1,27 @@
+name: Restart Caddy
+
+# Forces Caddy to restart and re-attempt Let's Encrypt certificate issuance,
+# then prints recent logs so you can see whether the cert was obtained.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restart Caddy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd "${{ secrets.VPS_PATH }}"
+            docker compose restart caddy
+            echo "Waiting 20s for cert attempt..."
+            sleep 20
+            echo "===== caddy logs (last 40) ====="
+            docker compose logs --tail=40 caddy
