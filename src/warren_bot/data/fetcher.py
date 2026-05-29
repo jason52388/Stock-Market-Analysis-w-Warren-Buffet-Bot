@@ -18,6 +18,15 @@ from .cache import Cache
 log = logging.getLogger(__name__)
 
 
+# Statements a Buffett screen needs before a ticker is scoreable. yfinance pulls
+# each of these from Yahoo in a SEPARATE request, and Yahoo's throttling can
+# blank any one of them independently — so "missing cash flow" almost always
+# means a throttled request, not a company without a cash-flow statement. We
+# require the full set and treat a partial pull as a (transient) failure rather
+# than scoring around the hole.
+REQUIRED_STATEMENTS = ("income", "balance", "cashflow", "price_history")
+
+
 @dataclass
 class TickerSnapshot:
     ticker: str
@@ -29,8 +38,22 @@ class TickerSnapshot:
     error: str | None = None
     price_asof: float | None = None          # epoch secs when price/mcap last refreshed
 
+    def missing_statements(self) -> list[str]:
+        """Which of the REQUIRED_STATEMENTS came back empty/absent."""
+        missing = []
+        for name in REQUIRED_STATEMENTS:
+            df = getattr(self, name)
+            if df is None or getattr(df, "empty", True):
+                missing.append(name)
+        return missing
+
     @property
     def ok(self) -> bool:
+        # Scoreable as soon as we have income — the scorer is a pure function and
+        # downstream unit tests / the single-ticker `screen` command rely on it
+        # producing a partial breakdown. The full-completeness gate is enforced
+        # in the fetch path (it sets `error`), so pipeline runs never score an
+        # incomplete snapshot: an errored snapshot makes this False too.
         return self.error is None and self.income is not None and not self.income.empty
 
 
@@ -84,8 +107,12 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
         log.debug("history fetch failed for %s: %s", ticker, e)
 
     snap.price_asof = time.time()
-    if snap.income is None or snap.income.empty:
-        snap.error = "no financials returned"
+    missing = snap.missing_statements()
+    if missing:
+        # Don't score around a hole. A partial pull (e.g. income + balance but a
+        # throttled cash flow) is reported as incomplete and re-fetched next run
+        # rather than cached for a week and silently scored on the data we have.
+        snap.error = "incomplete data: missing " + ", ".join(missing)
     return snap
 
 
@@ -150,6 +177,11 @@ class Fetcher:
         # partial Yahoo response. Treat it as transient so alphabetically later
         # large caps don't get suppressed for the full weekly cache window.
         if "below min market cap" in snap.error and "mcap=None" in snap.error:
+            return True
+        # Incomplete statements are almost always a throttled per-statement pull,
+        # not a company that genuinely lacks the filing — re-fetch next run so a
+        # transient blank doesn't exclude a valid name for the full cache window.
+        if snap.error.startswith("incomplete data"):
             return True
         # Anything that came back with a populated info dict is stable.
         return False

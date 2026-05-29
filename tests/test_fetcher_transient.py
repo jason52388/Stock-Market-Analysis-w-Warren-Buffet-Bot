@@ -36,6 +36,50 @@ class TestIsTransientError:
         snap = TickerSnapshot(ticker="AAPL", info={"x": 1}, error=None)
         assert Fetcher._is_transient_error(snap) is False
 
+    def test_incomplete_data_is_transient(self):
+        # A throttled per-statement pull should re-fetch next run, not stick for
+        # the full weekly cache window.
+        snap = TickerSnapshot(
+            ticker="AAPL",
+            info={"shortName": "Apple Inc."},
+            error="incomplete data: missing cashflow",
+        )
+        assert Fetcher._is_transient_error(snap) is True
+
+
+class TestCompletenessGate:
+    """All four statements are required before a ticker can be scored."""
+
+    def _df(self):
+        import pandas as pd
+        return pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["Total Revenue"])
+
+    def test_full_snapshot_is_ok(self):
+        df = self._df()
+        snap = TickerSnapshot(ticker="OK", income=df, balance=df,
+                              cashflow=df, price_history=df)
+        assert snap.missing_statements() == []
+        assert snap.ok is True
+
+    def test_missing_cashflow_reports_incomplete(self):
+        import pandas as pd
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        df = self._df()
+        ticker_obj = SimpleNamespace(
+            info={"shortName": "Bigco", "marketCap": 5e11},
+            fast_info={"market_cap": 5e11},
+            get_income_stmt=lambda freq: df,
+            get_balance_sheet=lambda freq: df,
+            get_cashflow=lambda freq: pd.DataFrame(),   # throttled -> empty
+            history=lambda **kwargs: df,
+        )
+        with patch("warren_bot.data.fetcher.yf.Ticker", return_value=ticker_obj):
+            snap = _fetch_ticker("BIG", min_market_cap=300_000_000)
+        assert snap.missing_statements() == ["cashflow"]
+        assert snap.error == "incomplete data: missing cashflow"
+        assert snap.ok is False  # not scoreable -> excluded downstream
+
 
 class TestMarketCapPrefilter:
     def test_fast_info_market_cap_rescues_partial_info(self):
@@ -54,7 +98,11 @@ class TestMarketCapPrefilter:
             snap = _fetch_ticker("CAT", min_market_cap=300_000_000)
 
         assert snap.info["marketCap"] == 150_000_000_000
-        assert snap.error == "no financials returned"
+        # fast_info rescued the market cap (passes the pre-filter), but every
+        # statement pull came back empty -> reported as incomplete, not scored.
+        assert snap.error is not None
+        assert snap.error.startswith("incomplete data")
+        assert snap.missing_statements() == ["income", "balance", "cashflow", "price_history"]
 
 
 class TestTransientShortTTL:
