@@ -194,3 +194,40 @@ def merge(base: TickerSnapshot, secondary: list[SourceResult],
     snap.provenance = provenance
     snap.flags = [f.describe() for f in flags]
     return MergeResult(snapshot=snap, provenance=provenance, flags=flags)
+
+
+def summarize_quality(provenance: dict[str, str],
+                      flags: list[ValidationFlag]) -> dict | None:
+    """Build one data-quality summary used by every dashboard surface so the
+    badge is identical everywhere. Returns None when a pick wasn't enriched.
+
+    level: ``ok`` (corroborated, all yfinance), ``info`` (gap-filled or minor
+    disagreement), ``warn`` (a high-severity key-figure conflict / non-corroboration).
+    """
+    if not provenance and not flags:
+        return None
+    gapfilled = {k: v for k, v in provenance.items() if v not in ("yfinance", "missing")}
+    sources = sorted({v for v in provenance.values() if v not in ("missing",)}
+                     | {f_src for f in flags for f_src in f.values})
+    has_high = any(f.severity == "high" for f in flags)
+    if has_high:
+        level = "warn"
+    elif gapfilled or flags:
+        level = "info"
+    else:
+        level = "ok"
+    label = {"ok": "Verified", "info": "Cross-checked", "warn": "Check data"}[level]
+    detail: list[str] = []
+    if gapfilled:
+        filled = [f"{k.split(':')[-1]} ← {v}" for k, v in gapfilled.items()]
+        detail.append("Gap-filled: " + ", ".join(filled))
+    detail.extend(f.describe() for f in flags)
+    if not detail:
+        detail.append("Key figures corroborated across sources: " + ", ".join(sources))
+    return {
+        "level": level,
+        "label": label,
+        "sources": sources,
+        "flags": [f.describe() for f in flags],
+        "detail": detail,
+    }

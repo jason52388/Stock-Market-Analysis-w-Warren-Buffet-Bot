@@ -23,6 +23,7 @@ class Pick:
     # Multi-source enrichment (empty unless the enrich stage ran on this pick).
     provenance: dict = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
+    dq: dict | None = None      # data-quality badge summary (data.merge.summarize_quality)
 
 
 def load_universe(settings: dict) -> list[str]:
@@ -163,6 +164,7 @@ def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from .data.enrich import build_adapters, enrich_snapshot, _penalty_for
+    from .data.merge import summarize_quality
 
     merge_cfg = (settings.get("sources", {}) or {}).get("merge", {}) or {}
     if not merge_cfg.get("enabled", True):
@@ -193,7 +195,8 @@ def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list
         ts.corroboration_penalty = _penalty_for(flags)
         thesis = generate_thesis(ts, merged.info)
         return ticker, Pick(score=ts, thesis=thesis, snap_info=merged.info,
-                            provenance=merged.provenance, flags=merged.flags)
+                            provenance=merged.provenance, flags=merged.flags,
+                            dq=summarize_quality(merged.provenance, flags))
 
     updated: dict[str, Pick] = {}
     with ThreadPoolExecutor(max_workers=4) as pool:
