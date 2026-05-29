@@ -1,14 +1,17 @@
 name: Deploy to Hostinger VPS
 
-# Auto-deploys on push to main. The VPS pulls the new commit and rebuilds the
-# Docker image. The weekly bot run is scheduled by cron INSIDE the container —
-# this workflow does NOT run the bot, it only ships code.
+# Auto-deploys on push to main. SSHes into the VPS, makes sure a clean clone of
+# the repo exists, writes .env from GitHub secrets, and (re)starts the
+# containers. The weekly bot run is scheduled by cron INSIDE the container —
+# this workflow does NOT run the bot, it only ships code + config.
 #
 # Required secrets:
-#   VPS_HOST     — Hostinger hostname or IP
-#   VPS_USER     — SSH user (often `root`)
-#   VPS_SSH_KEY  — private SSH key whose public half is in ~/.ssh/authorized_keys on the VPS
-#   VPS_PATH     — absolute path to the repo on the VPS, e.g. /root/warren-bot
+#   Connection:  VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_PATH
+#   App config:  SITE_HOSTNAME, TZ, GMAIL_FROM, GMAIL_TO, GMAIL_APP_PASSWORD,
+#                NOTION_API_KEY, NOTION_DATABASE_ID
+#
+# The app-config secrets are written to .env on the VPS on every deploy, so the
+# server never needs manual configuration — change a secret, push, done.
 
 on:
   push:
@@ -26,17 +29,52 @@ jobs:
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          SITE_HOSTNAME: ${{ secrets.SITE_HOSTNAME }}
+          TZ: ${{ secrets.TZ }}
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          # StrictHostKeyChecking off is fine for a host we control; if you
-          # want to be tighter, set up a known_hosts entry instead.
+          # Forward the app-config env vars into the remote shell so the heredoc
+          # below can write them into .env.
+          envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID
           script: |
             set -euo pipefail
-            cd "${{ secrets.VPS_PATH }}"
-            git fetch --all
+
+            REPO="https://github.com/jason52388/Stock-Market-Analysis-w-Warren-Buffet-Bot.git"
+            DIR="${{ secrets.VPS_PATH }}"
+
+            # Ensure a clean clone exists at DIR. If it's missing or isn't a git
+            # repo (e.g. a half-finished manual clone), recreate it. .env is
+            # rewritten below regardless, so wiping the dir loses nothing.
+            if [ ! -d "$DIR/.git" ]; then
+              rm -rf "$DIR"
+              git clone "$REPO" "$DIR"
+            fi
+
+            cd "$DIR"
+            # Force the public HTTPS remote so no credentials are ever needed.
+            git remote set-url origin "$REPO"
+            git fetch origin main
             git reset --hard origin/main
-            docker compose pull || true
+
+            # Write .env from the secrets forwarded above. umask 077 -> chmod 600.
+            umask 077
+            cat > .env <<EOF
+            TZ=${TZ:-America/New_York}
+            SITE_HOSTNAME=${SITE_HOSTNAME}
+            GMAIL_FROM=${GMAIL_FROM}
+            GMAIL_TO=${GMAIL_TO}
+            GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD}
+            NOTION_API_KEY=${NOTION_API_KEY}
+            NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+            EOF
+
             docker compose up -d --build
             docker image prune -f
