@@ -46,6 +46,22 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
 
     # Cheap pre-filter: skip the expensive statement pulls for micro-caps.
     mcap = snap.info.get("marketCap") if snap.info else None
+    if min_market_cap and mcap is None:
+        # Yahoo's regular info endpoint often drops marketCap during throttling
+        # or partial responses. Try fast_info before deciding the ticker is
+        # below the cap threshold, otherwise one partial response can hide a
+        # perfectly valid large-cap stock for the cache TTL.
+        try:
+            fi = yft.fast_info
+            fast_mcap = (
+                fi.get("market_cap") if hasattr(fi, "get")
+                else getattr(fi, "market_cap", None)
+            )
+            if fast_mcap:
+                mcap = float(fast_mcap)
+                snap.info["marketCap"] = mcap
+        except Exception as e:
+            log.debug("fast_info market cap fetch failed for %s: %s", ticker, e)
     if min_market_cap and (mcap is None or mcap < min_market_cap):
         snap.error = f"below min market cap (mcap={mcap})"
         return snap
@@ -129,6 +145,11 @@ class Fetcher:
             return False
         # Empty info → almost certainly a network/throttle blip; retry sooner.
         if not snap.info:
+            return True
+        # A missing market cap from an otherwise populated info dict is also a
+        # partial Yahoo response. Treat it as transient so alphabetically later
+        # large caps don't get suppressed for the full weekly cache window.
+        if "below min market cap" in snap.error and "mcap=None" in snap.error:
             return True
         # Anything that came back with a populated info dict is stable.
         return False

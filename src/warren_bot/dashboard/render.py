@@ -241,6 +241,8 @@ def build_ai_disruption_data(
         sector = (s.sector or "").lower()
         pos_score = len(ai_hits) + len(pos_hits)
         neg_score = len(ai_hits) + len(neg_hits)
+        has_direct_ai_context = bool(ai_hits)
+        has_directional_signal = bool(pos_hits or neg_hits)
 
         if "technology" in sector:
             pos_score += 2
@@ -260,6 +262,12 @@ def build_ai_disruption_data(
                 matching_news.append(n)
         if not matching_news:
             matching_news = news_items[:2]
+
+        # Keep this page curated: a stock must have explicit AI context plus a
+        # directional exposure signal. A generic technology sector tag or a
+        # broad Buffett thesis should not be enough to appear here.
+        if not (has_direct_ai_context and has_directional_signal):
+            continue
 
         base = {
             "ticker": s.ticker,
@@ -324,8 +332,8 @@ def build_ai_disruption_data(
                         "url": a.url,
                     })
     return {
-        "positive": positive[:50],
-        "negative": negative[:50],
+        "positive": positive[:20],
+        "negative": negative[:20],
         "articles": ai_articles[:8],
     }
 
@@ -885,14 +893,14 @@ table.kpi td.na { color: var(--na); }
   <details class="howto">
     <summary>How recommendations are calculated</summary>
     <div class="howto-body">
-      <p>A ticker is recommended when it passes the Buffett quant screen
+      <p>A ticker is recommended when it passes the Buffett screen
       (≥60/100) and either appears in dataroma's super-investor data <em>or</em>
       scores well enough on its own. Each ticker gets a <strong>composite
       score</strong>:</p>
       <p style="background: #fff5d6; padding: 10px 12px; border-radius: 6px;
                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 font-size: 12.5px; margin: 8px 0;">
-composite = quant_score<br>
+composite = buffett_score<br>
 &nbsp;&nbsp;+ holdings_bonus&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666">// 0–8, scaled by rank in dataroma top-50 holdings</span><br>
 &nbsp;&nbsp;+ accumulation_bonus&nbsp;<span style="color:#666">// 0–10, scaled by rank in last-quarter buys</span><br>
 &nbsp;&nbsp;− distribution_penalty <span style="color:#666">// 0–8, scaled by rank in last-quarter sells</span>
@@ -904,23 +912,23 @@ composite = quant_score<br>
         <thead><tr><th>Tier</th><th>Meaning</th></tr></thead>
         <tbody>
           <tr><td><span class="tier-badge accumulating">accumulating</span></td>
-              <td>Passed quant screen + more super-investors buying than selling last quarter.
+              <td>Passed Buffett screen + more super-investors buying than selling last quarter.
               Smart-money momentum in your favor.</td></tr>
           <tr><td><span class="tier-badge consensus">consensus</span></td>
-              <td>Passed quant screen + widely held by super-investors with no buy/sell skew.
+              <td>Passed Buffett screen + widely held by super-investors with no buy/sell skew.
               Steady-state ownership.</td></tr>
           <tr><td><span class="tier-badge caution">caution</span></td>
-              <td>Passed quant screen <em>but</em> more super-investors are
+              <td>Passed Buffett screen <em>but</em> more super-investors are
               trimming than adding. Smart money may know something. Worth
               extra due diligence.</td></tr>
-          <tr><td><span class="tier-badge quant-only">quant-only</span></td>
-              <td>Passed quant screen with no dataroma signal at all. Either
+          <tr><td><span class="tier-badge quant-only">buffett-only</span></td>
+              <td>Passed Buffett screen with no dataroma signal at all. Either
               the super-investors aren't tracking it, or it's already a
               consensus name and they're holding steady.</td></tr>
         </tbody>
       </table>
       <p style="color: var(--muted); font-size: 11.5px;">
-        Quant inputs from yfinance financials; flow inputs from
+        Buffett inputs from yfinance financials; flow inputs from
         <a href="https://www.dataroma.com/m/grid.php" target="_blank">dataroma.com</a>'s
         aggregated 13F filings (updated quarterly, ~45 days after quarter end).
       </p>
@@ -935,7 +943,7 @@ composite = quant_score<br>
         <option value="consensus">Consensus (held by many)</option>
         <option value="accumulating">Smart-money accumulating</option>
         <option value="caution">Caution (smart-money exiting)</option>
-        <option value="quant-only">Quant-only (no hedge fund signal)</option>
+        <option value="quant-only">Buffett-only (no hedge fund signal)</option>
       </select>
     </div>
     <div class="control">
@@ -957,7 +965,7 @@ composite = quant_score<br>
   <div class="section-head">
     Recommended — <span class="count" id="recCount">{{ recommendations|length }}</span>
     <span style="color: var(--muted); font-weight: 400; font-size: 12px; text-transform: none;">
-      · ranked by composite of Buffett quant score + hedge fund signal
+      · ranked by composite of Buffett score + hedge fund signal
     </span>
   </div>
 
@@ -976,14 +984,14 @@ composite = quant_score<br>
       <div class="head">
         <span class="ticker">{{ r.pick.score.ticker }}</span>
         <span class="name">{{ r.pick.score.name }}</span>
-        <span class="tier-badge {{ r.tier }}">{{ r.tier }}</span>
+        <span class="tier-badge {{ r.tier }}">{{ 'buffett-only' if r.tier == 'quant-only' else r.tier }}</span>
       </div>
       <div class="sector">{{ r.pick.score.sector or 'Unknown sector' }}
         {% if r.pick.score.valuation.price %} · ${{ '%.2f'|format(r.pick.score.valuation.price) }}{% endif %}
         {% if r.pick.score.valuation.margin_of_safety_pct is not none %} · MoS {{ '%.0f'|format(r.pick.score.valuation.margin_of_safety_pct) }}%{% endif %}
       </div>
       <div class="rec-reasons">
-        <span class="tag quant">Quant {{ '%.0f'|format(r.quant_score) }}/100</span>
+        <span class="tag quant">Buffett {{ '%.0f'|format(r.quant_score) }}/100</span>
         {% if r.holdings_count %}
         <span class="tag hold">Held by {{ r.holdings_count }} super-investors{% if r.holdings_rank %} (#{{ r.holdings_rank }}){% endif %}</span>
         {% endif %}
@@ -1002,12 +1010,12 @@ composite = quant_score<br>
   {% endfor %}
   {% else %}
   <div class="empty">No overlapping recommendations this run.
-    Either no quant picks scored ≥60, or none of them appear in dataroma's tracked
+    Either no Buffett picks scored ≥60, or none of them appear in dataroma's tracked
     super-investor portfolios. Check the Stock Picks and Hedge Funds tabs separately.</div>
   {% endif %}
 
   <div class="attribution">
-    Composite = Buffett quant score + (held-by-managers bonus) + (current-accumulation bonus) − (current-distribution penalty).
+    Composite = Buffett score + (held-by-managers bonus) + (current-accumulation bonus) − (current-distribution penalty).
     Sources: yfinance financials · <a href="https://www.dataroma.com/m/grid.php" target="_blank">dataroma.com</a> 13F aggregates.
   </div>
 </section>
@@ -1106,7 +1114,7 @@ composite = quant_score<br>
 
   <div class="attribution">
     Chart: TradingView · Fundamentals: yfinance · Buffett score: this bot's
-    composite (0–100) · Composite: quant + smart-money signal.
+    composite (0–100) · Composite: Buffett score + smart-money signal.
   </div>
 </section>
 <script id="ckData" type="application/json">{{ cockpit_json }}</script>

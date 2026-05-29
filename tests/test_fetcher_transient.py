@@ -24,9 +24,37 @@ class TestIsTransientError:
         )
         assert Fetcher._is_transient_error(snap) is False
 
+    def test_missing_market_cap_prefilter_is_transient(self):
+        snap = TickerSnapshot(
+            ticker="CAT",
+            info={"shortName": "Caterpillar Inc."},
+            error="below min market cap (mcap=None)",
+        )
+        assert Fetcher._is_transient_error(snap) is True
+
     def test_no_error_not_transient(self):
         snap = TickerSnapshot(ticker="AAPL", info={"x": 1}, error=None)
         assert Fetcher._is_transient_error(snap) is False
+
+
+class TestMarketCapPrefilter:
+    def test_fast_info_market_cap_rescues_partial_info(self):
+        from types import SimpleNamespace
+
+        ticker_obj = SimpleNamespace(
+            info={"shortName": "Caterpillar Inc."},
+            fast_info={"market_cap": 150_000_000_000},
+            get_income_stmt=lambda freq: None,
+            get_balance_sheet=lambda freq: None,
+            get_cashflow=lambda freq: None,
+            history=lambda **kwargs: None,
+        )
+
+        with patch("warren_bot.data.fetcher.yf.Ticker", return_value=ticker_obj):
+            snap = _fetch_ticker("CAT", min_market_cap=300_000_000)
+
+        assert snap.info["marketCap"] == 150_000_000_000
+        assert snap.error == "no financials returned"
 
 
 class TestTransientShortTTL:
