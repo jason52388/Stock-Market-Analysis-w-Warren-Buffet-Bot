@@ -1,0 +1,16 @@
+# Warren Bot weekly run.
+# TZ comes from the container's TZ env var (set in docker-compose.yml).
+# Sunday 18:00 local time. Adjust to taste.
+#
+# What this line does:
+#  1. cd into the app
+#  2. run the bot (writes out/preview.html, out/picks.csv, emails, syncs Notion)
+#  3. snapshot the result into out/archive/YYYY-MM-DD.html
+#  4. regenerate out/index.html listing every archived run
+#
+# All stdout/stderr goes to /var/log/warren.log, which entrypoint.sh tails so
+# the output shows up in `docker compose logs bot`.
+
+0 18 * * 0 root cd /app && warren-bot run && cp out/preview.html "out/archive/$(date +\%Y-\%m-\%d).html" && /app/deploy/build-index.sh >> /var/log/warren.log 2>&1
+
+# Trailing newline is required for cron to accept the file.

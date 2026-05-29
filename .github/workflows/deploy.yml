@@ -1,0 +1,42 @@
+name: Deploy to Hostinger VPS
+
+# Auto-deploys on push to main. The VPS pulls the new commit and rebuilds the
+# Docker image. The weekly bot run is scheduled by cron INSIDE the container —
+# this workflow does NOT run the bot, it only ships code.
+#
+# Required secrets:
+#   VPS_HOST     — Hostinger hostname or IP
+#   VPS_USER     — SSH user (often `root`)
+#   VPS_SSH_KEY  — private SSH key whose public half is in ~/.ssh/authorized_keys on the VPS
+#   VPS_PATH     — absolute path to the repo on the VPS, e.g. /root/warren-bot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # StrictHostKeyChecking off is fine for a host we control; if you
+          # want to be tighter, set up a known_hosts entry instead.
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.VPS_PATH }}"
+            git fetch --all
+            git reset --hard origin/main
+            docker compose pull || true
+            docker compose up -d --build
+            docker image prune -f

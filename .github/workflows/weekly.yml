@@ -1,0 +1,70 @@
+name: Manual Buffett Bot run (backup)
+
+# NOTE: The scheduled cron trigger is intentionally disabled. Weekly runs
+# happen on the Hostinger VPS (see docker-compose.yml + deploy/crontab).
+# This workflow is kept as a manual-trigger-only backup — useful if the VPS
+# is down and you need a one-off run from GitHub. Re-enable the schedule
+# block ONLY if you've also stopped the VPS cron, or you'll send two emails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cap tickers (debug)"
+        required: false
+        default: ""
+      force_refresh:
+        description: "Bypass cache"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Restore cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: warren-bot-cache-${{ github.run_id }}
+          restore-keys: |
+            warren-bot-cache-
+
+      - name: Run bot
+        env:
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ inputs.limit }}"; fi
+          if [ "${{ inputs.force_refresh }}" = "true" ]; then ARGS="$ARGS --force-refresh"; fi
+          uv run warren-bot run $ARGS
+
+      - name: Upload run outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buffett-bot-${{ github.run_id }}
+          path: |
+            out/picks.csv
+            out/dashboard.html
+          if-no-files-found: ignore

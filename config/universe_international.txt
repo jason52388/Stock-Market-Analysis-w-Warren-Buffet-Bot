@@ -1,0 +1,312 @@
+# Major international names on non-US exchanges (yfinance suffix conventions).
+# Curated mega/large caps — supplements universe_adrs.txt for KPI lookups.
+#
+#   .L   London Stock Exchange     .T    Tokyo
+#   .HK  Hong Kong                  .TO   Toronto
+#   .PA  Paris (Euronext)           .AS   Amsterdam
+#   .DE  Frankfurt (Xetra)          .MI   Milan
+#   .MC  Madrid                     .SW   Swiss
+#   .ST  Stockholm                  .OL   Oslo
+#   .CO  Copenhagen                 .HE   Helsinki
+#   .NS  India (NSE)                .AX   Australia (ASX)
+#   .SS  Shanghai                   .SZ   Shenzhen
+#   .KS  Korea (KOSPI)              .TW   Taiwan
+#   .MX  Mexico                     .SA   Sao Paulo
+
+# === United Kingdom (LSE) ===
+SHEL.L
+BP.L
+AZN.L
+GSK.L
+ULVR.L
+DGE.L
+BATS.L
+HSBA.L
+LLOY.L
+BARC.L
+NWG.L
+STAN.L
+RIO.L
+GLEN.L
+AAL.L
+BHP.L
+TSCO.L
+SBRY.L
+NXT.L
+MKS.L
+BA.L
+RR.L
+RKT.L
+EXPN.L
+REL.L
+LSEG.L
+PRU.L
+LGEN.L
+ABF.L
+IMB.L
+CCH.L
+III.L
+SMIN.L
+SGE.L
+WTB.L
+
+# === Continental Europe ===
+# Paris (.PA)
+MC.PA
+OR.PA
+SAN.PA
+TTE.PA
+AIR.PA
+BNP.PA
+RMS.PA
+KER.PA
+SU.PA
+AI.PA
+CAP.PA
+DG.PA
+DSY.PA
+EL.PA
+EN.PA
+GLE.PA
+SAF.PA
+SGO.PA
+STLA.PA
+VIE.PA
+VIV.PA
+
+# Amsterdam (.AS)
+ASML.AS
+AD.AS
+INGA.AS
+HEIA.AS
+PRX.AS
+DSM.AS
+PHIA.AS
+RAND.AS
+WKL.AS
+KPN.AS
+ABN.AS
+
+# Frankfurt (.DE / .F)
+SAP.DE
+SIE.DE
+ALV.DE
+DTE.DE
+BMW.DE
+MBG.DE
+VOW3.DE
+BAYN.DE
+BAS.DE
+ADS.DE
+DPW.DE
+DBK.DE
+MUV2.DE
+RWE.DE
+EOAN.DE
+HEN3.DE
+LIN.DE
+IFX.DE
+DHL.DE
+PUM.DE
+
+# Milan (.MI)
+ENI.MI
+ENEL.MI
+ISP.MI
+UCG.MI
+TIT.MI
+RACE.MI
+G.MI
+
+# Swiss (.SW)
+NESN.SW
+ROG.SW
+NOVN.SW
+ZURN.SW
+UBSG.SW
+ABBN.SW
+RICHN.SW
+
+# Madrid (.MC)
+IBE.MC
+SAN.MC
+BBVA.MC
+ITX.MC
+TEF.MC
+
+# Nordic
+ATCO-A.ST
+VOLV-B.ST
+HM-B.ST
+ERIC-B.ST
+INVE-B.ST
+SEB-A.ST
+SAND.ST
+NDA-SE.ST
+ESSITY-B.ST
+NOVOB.CO
+ORSTED.CO
+MAERSK-B.CO
+NESTE.HE
+NOKIA.HE
+EQNR.OL
+DNB.OL
+TEL.OL
+
+# === Asia ===
+# Tokyo (.T) — numeric codes
+7203.T
+9984.T
+6758.T
+6861.T
+7974.T
+6098.T
+4063.T
+6594.T
+4502.T
+8306.T
+8316.T
+8411.T
+9433.T
+9434.T
+9432.T
+6501.T
+6502.T
+7267.T
+7201.T
+6902.T
+4503.T
+8035.T
+6981.T
+6273.T
+4543.T
+9983.T
+6367.T
+8001.T
+8031.T
+8058.T
+2914.T
+3382.T
+4661.T
+
+# Hong Kong (.HK)
+0700.HK
+0941.HK
+1299.HK
+0388.HK
+2318.HK
+3690.HK
+9988.HK
+9618.HK
+1810.HK
+0939.HK
+1398.HK
+3988.HK
+2628.HK
+0883.HK
+0857.HK
+0386.HK
+0005.HK
+0001.HK
+0016.HK
+0027.HK
+0011.HK
+0002.HK
+1928.HK
+
+# Korea (.KS)
+005930.KS
+000660.KS
+035420.KS
+005380.KS
+051910.KS
+006400.KS
+035720.KS
+207940.KS
+068270.KS
+
+# Taiwan (.TW)
+2330.TW
+2317.TW
+2454.TW
+2412.TW
+2308.TW
+
+# India (.NS)
+RELIANCE.NS
+TCS.NS
+INFY.NS
+HDFCBANK.NS
+ICICIBANK.NS
+HINDUNILVR.NS
+SBIN.NS
+BHARTIARTL.NS
+ITC.NS
+KOTAKBANK.NS
+ASIANPAINT.NS
+LT.NS
+AXISBANK.NS
+MARUTI.NS
+SUNPHARMA.NS
+TITAN.NS
+HCLTECH.NS
+ULTRACEMCO.NS
+BAJFINANCE.NS
+WIPRO.NS
+
+# === Americas (non-US) ===
+# Toronto (.TO)
+SHOP.TO
+RY.TO
+TD.TO
+BNS.TO
+BMO.TO
+CM.TO
+NA.TO
+ENB.TO
+CNQ.TO
+SU.TO
+TRP.TO
+CP.TO
+CNR.TO
+BCE.TO
+T.TO
+ATD.TO
+BN.TO
+MFC.TO
+SLF.TO
+BAM.TO
+GIB-A.TO
+
+# Mexico (.MX)
+WALMEX.MX
+FEMSAUBD.MX
+GFNORTEO.MX
+AMXB.MX
+
+# Brazil (.SA)
+PETR4.SA
+VALE3.SA
+ITUB4.SA
+BBDC4.SA
+ABEV3.SA
+BBAS3.SA
+WEGE3.SA
+B3SA3.SA
+
+# === Australia (.AX) ===
+BHP.AX
+CBA.AX
+CSL.AX
+NAB.AX
+WBC.AX
+ANZ.AX
+WES.AX
+WDS.AX
+TLS.AX
+RIO.AX
+WOW.AX
+MQG.AX
+FMG.AX
+TCL.AX
+ALL.AX

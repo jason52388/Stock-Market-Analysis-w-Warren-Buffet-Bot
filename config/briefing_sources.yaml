@@ -1,0 +1,42 @@
+# RSS feeds for the weekly briefing tab.
+# Tier 1 = institutional financial / general press
+# Tier 2 = high-quality tech press
+# Tier 3 = direct AI lab blogs (slower cadence, high signal)
+# Tier 4 = community-curated (HN) — noisier, weight lower
+
+sources:
+  - { name: "Reuters Technology",        tier: 1, url: "https://www.reutersagency.com/feed/?best-sectors=technology&post_type=best" }
+  - { name: "Bloomberg Technology",      tier: 1, url: "https://feeds.bloomberg.com/technology/news.rss" }
+  - { name: "WSJ Tech",                  tier: 1, url: "https://feeds.content.dowjones.io/public/rss/RSSWSJD" }
+  - { name: "NYT Technology",            tier: 1, url: "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml" }
+  - { name: "FT Tech",                   tier: 1, url: "https://www.ft.com/technology?format=rss" }
+  - { name: "The Economist Business",    tier: 1, url: "https://www.economist.com/business/rss.xml" }
+  - { name: "MIT Technology Review",     tier: 2, url: "https://www.technologyreview.com/feed/" }
+  - { name: "Ars Technica",              tier: 2, url: "https://feeds.arstechnica.com/arstechnica/technology-lab" }
+  - { name: "The Verge",                 tier: 2, url: "https://www.theverge.com/rss/index.xml" }
+  - { name: "Wired",                     tier: 2, url: "https://www.wired.com/feed/rss" }
+  - { name: "SemiAnalysis",              tier: 2, url: "https://www.semianalysis.com/feed" }
+  - { name: "Stratechery",               tier: 2, url: "https://stratechery.com/feed/" }
+  - { name: "Anthropic",                 tier: 3, url: "https://www.anthropic.com/news/rss.xml" }
+  - { name: "OpenAI",                    tier: 3, url: "https://openai.com/blog/rss.xml" }
+  - { name: "Hugging Face",              tier: 3, url: "https://huggingface.co/blog/feed.xml" }
+  - { name: "Hacker News (front page)",  tier: 4, url: "https://hnrss.org/frontpage" }
+
+# Topic keyword sets. An article must hit at least one tracked-topic keyword
+# to make the briefing. Multi-topic hits land in the strongest match.
+topics:
+  AI:
+    keywords: [ai, "artificial intelligence", "machine learning", llm, gpt, claude,
+               gemini, openai, anthropic, deepmind, "generative ai",
+               "large language model", transformer, agent, copilot, "mixture of experts" ]
+  Semis & Hardware:
+    keywords: [chip, chips, semiconductor, gpu, tsmc, asml, intel, amd, arm,
+               foundry, wafer, "data center", hbm, cuda, nvidia, broadcom, marvell]
+  Software & Cloud:
+    keywords: [saas, "software as a service", cloud, kubernetes, aws, azure, gcp,
+               snowflake, databricks, "open source", oracle, salesforce, servicenow]
+  Industry & Macro:
+    keywords: [fed, "interest rate", inflation, gdp, jobs, cpi, recession,
+               tariff, "supply chain", earnings, regulation, antitrust, ftc, doj]
+  Crypto & Markets:
+    keywords: [crypto, bitcoin, ethereum, blockchain, stablecoin, etf, "spot bitcoin"]

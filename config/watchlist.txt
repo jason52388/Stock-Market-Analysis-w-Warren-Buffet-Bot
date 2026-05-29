@@ -1,0 +1,23 @@
+# Manual watchlist. One ticker per line. '#' for comments.
+# Seeded with major Berkshire Hathaway 13F holdings + Buffett-style classics.
+AAPL
+BAC
+AXP
+KO
+CVX
+OXY
+KHC
+MCO
+DVA
+KR
+VRSN
+C
+V
+MA
+COST
+HD
+LOW
+SBUX
+NKE
+MKL
+BRK-B

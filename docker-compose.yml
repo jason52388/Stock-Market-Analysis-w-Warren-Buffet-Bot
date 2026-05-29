@@ -1,0 +1,57 @@
+# NOTE: No `version:` field on purpose. Hostinger's docker-compose parser
+# rejects it outright. Modern compose (v2+) ignores it anyway.
+#
+# NOTE: We use explicit `environment:` blocks with ${VAR} substitution instead
+# of `env_file:`. Hostinger's hosted compose parser silently drops env_file
+# directives — vars come back empty at runtime with no error.
+
+services:
+  bot:
+    build: .
+    container_name: warren-bot
+    restart: unless-stopped
+    environment:
+      # Schedule
+      - TZ=${TZ:-America/New_York}
+      # Gmail SMTP
+      - GMAIL_FROM=${GMAIL_FROM}
+      - GMAIL_TO=${GMAIL_TO}
+      - GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD}
+      # Notion
+      - NOTION_API_KEY=${NOTION_API_KEY}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+    volumes:
+      # yfinance SQLite cache survives container rebuilds
+      - ./.cache:/app/.cache
+      # Generated HTML/CSV — served read-only by Caddy
+      - ./out:/app/out
+    networks:
+      - warren
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: warren-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - SITE_HOSTNAME=${SITE_HOSTNAME}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./out:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - warren
+    depends_on:
+      - bot
+
+networks:
+  warren:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

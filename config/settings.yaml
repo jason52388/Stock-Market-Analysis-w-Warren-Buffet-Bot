@@ -1,0 +1,74 @@
+# Warren Bot configuration
+
+# Dimension weights (must sum to 1.0)
+weights:
+  moat: 0.30
+  strength: 0.20
+  consistency: 0.20
+  valuation: 0.20
+  capital_allocation: 0.10
+
+# Thresholds for surfacing in digest
+score_thresholds:
+  strong_match: 75
+  interesting_angle: 60
+  partial_match: 45        # below this = not surfaced
+
+# Per-criterion targets (used by the piecewise scorer)
+criteria:
+  # Moat & Profitability
+  roe_pct:                  { target: 15, excellent: 25 }
+  roic_pct:                 { target: 12, excellent: 20 }
+  gross_margin_pct:         { target: 40, excellent: 60 }
+  net_margin_pct:           { target: 10, excellent: 20 }
+  # Financial Strength
+  debt_to_equity:           { target: 0.5, excellent: 0.2, lower_is_better: true }
+  interest_coverage:        { target: 5,   excellent: 15 }
+  current_ratio:            { target: 1.5, excellent: 2.5 }
+  # Consistency
+  years_profitable:         { target: 8,   excellent: 10 }   # out of last 10
+  revenue_cagr_pct:         { target: 5,   excellent: 12 }
+  eps_cagr_pct:             { target: 8,   excellent: 15 }
+  fcf_positive_years:       { target: 8,   excellent: 10 }
+  # Valuation
+  fcf_yield_pct:            { target: 5,   excellent: 8 }
+  pe_vs_median_ratio:       { target: 1.0, excellent: 0.7, lower_is_better: true }  # current/median
+  margin_of_safety_pct:     { target: 20,  excellent: 40 }
+  # Capital allocation
+  shareholder_yield_pct:    { target: 3,   excellent: 7 }   # dividend + buyback
+  share_count_cagr_pct:     { target: 0,   excellent: -2, lower_is_better: true }   # negative = buybacks
+
+# Data fetching
+data:
+  cache_path: .cache/warren_bot.sqlite
+  cache_ttl_hours: 168            # 1 week
+  yf_max_retries: 3
+  yf_batch_size: 25
+  yf_batch_sleep_sec: 2
+  # Pre-filter: skip stocks below this market cap before pulling statements.
+  # Buffett rarely touches micro-caps; this dramatically cuts runtime on the
+  # all-US universe. Set to 0 to disable.
+  min_market_cap_usd: 300000000   # $300M
+
+# Universe files (relative to repo root). All files are merged + deduped.
+# Comment out lines to narrow the universe.
+universe:
+  files:
+    - config/universe_us.txt              # all US common stocks (~5400)
+    - config/universe_adrs.txt            # major international ADRs on US exchanges
+    - config/universe_international.txt   # major non-US-listed names (LSE, TSE, HKEx, etc.)
+    - config/watchlist.txt                # your manual picks (always included)
+
+# Delivery
+delivery:
+  email:
+    enabled: true
+    from_addr: ${GMAIL_FROM}     # e.g. you@gmail.com
+    to_addr:   ${GMAIL_TO}
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    # password supplied via GMAIL_APP_PASSWORD env var
+  notion:
+    enabled: true
+    database_id: ${NOTION_DATABASE_ID}
+    # NOTION_API_KEY supplied via env
