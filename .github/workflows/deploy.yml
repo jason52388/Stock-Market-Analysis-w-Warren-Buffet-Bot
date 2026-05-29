@@ -34,7 +34,8 @@ jobs:
           TZ: ${{ secrets.TZ }}
           GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # Your repo secret is named GMAIL_APP_SECRET; map it to the var the bot reads.
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_SECRET }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         with:
