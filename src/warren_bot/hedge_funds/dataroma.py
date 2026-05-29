@@ -29,8 +29,6 @@ from ..data.cache import Cache
 
 log = logging.getLogger(__name__)
 
-ATTRIBUTION_URL = "https://www.dataroma.com/m/grid.php"
-BRK_HOLDINGS_URL = "https://www.dataroma.com/m/holdings.php?m=BRK"
 USER_AGENT = "warren-bot/0.1 (+research; contact via repo)"
 
 ViewKind = Literal["holdings", "buys", "sells"]

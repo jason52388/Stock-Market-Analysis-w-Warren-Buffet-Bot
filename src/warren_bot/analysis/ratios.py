@@ -67,7 +67,7 @@ def _aligned_series(num: list[float], den: list[float]) -> list[float | None]:
 
 
 def compute_ratios(snap: TickerSnapshot) -> RatioSet:
-    income, balance, cashflow = snap.income, snap.balance, snap.cashflow
+    income, balance = snap.income, snap.balance
 
     rev_s = series_values(row(income, _REVENUE))
     net_s = series_values(row(income, _NET_INCOME))
@@ -79,7 +79,6 @@ def compute_ratios(snap: TickerSnapshot) -> RatioSet:
     gross_s = series_values(gross_row) if gross_row is not None else []
 
     equity_s = series_values(row(balance, _TOTAL_EQUITY))
-    assets_s = series_values(row(balance, _TOTAL_ASSETS))
     total_debt_s = series_values(row(balance, _TOTAL_DEBT))
     if not total_debt_s:
         lt = series_values(row(balance, _LONG_TERM_DEBT))
@@ -113,10 +112,11 @@ def compute_ratios(snap: TickerSnapshot) -> RatioSet:
         invested = equity_s[i] + total_debt_s[i] - cash
         roic.append(safe_div(nopat * 100.0, invested) if invested and invested > 0 else None)
 
-    # Latest balance-sheet ratios
-    cur_assets = latest(row(balance, _CURRENT_ASSETS))
-    cur_liab = latest(row(balance, _CURRENT_LIAB))
-    cur_ratio = safe_div(cur_assets, cur_liab)
+    # Latest balance-sheet ratios. Bind the rows once so `latest()` doesn't
+    # re-execute the row lookup (and its internal sort) twice per ticker.
+    cur_assets_row = row(balance, _CURRENT_ASSETS)
+    cur_liab_row = row(balance, _CURRENT_LIAB)
+    cur_ratio = safe_div(latest(cur_assets_row), latest(cur_liab_row))
 
     debt_latest = total_debt_s[-1] if total_debt_s else None
     equity_latest = equity_s[-1] if equity_s else None

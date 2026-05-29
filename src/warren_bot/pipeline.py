@@ -39,11 +39,18 @@ def load_universe(settings: dict) -> list[str]:
     return tickers
 
 
-def _build_fetcher(settings: dict) -> Fetcher:
+def build_cache(settings: dict) -> Cache:
+    """Build the shared SQLite cache. Reused by the fetcher AND by dataroma
+    so we don't open two connections to the same file."""
     data_cfg = settings["data"]
     root = repo_root()
     cache_path = root / data_cfg["cache_path"]
-    cache = Cache(cache_path, ttl_seconds=int(data_cfg["cache_ttl_hours"]) * 3600)
+    return Cache(cache_path, ttl_seconds=int(data_cfg["cache_ttl_hours"]) * 3600)
+
+
+def _build_fetcher(settings: dict, cache: Cache | None = None) -> Fetcher:
+    data_cfg = settings["data"]
+    cache = cache or build_cache(settings)
     return Fetcher(
         cache,
         batch_size=int(data_cfg["yf_batch_size"]),
@@ -63,13 +70,37 @@ def screen_one(ticker: str, settings: dict | None = None) -> Pick | None:
     return Pick(score=score, thesis=thesis, snap_info=snap.info)
 
 
+def _score_one(
+    ticker: str, fetcher: Fetcher, settings: dict, *, force_refresh: bool
+) -> Pick | None:
+    """Fetch, score, generate thesis. Returns None on hard failure (logged)."""
+    try:
+        snap: TickerSnapshot = fetcher.get(ticker, force_refresh=force_refresh)
+        ts = score_ticker(snap, settings)
+        thesis = generate_thesis(ts, snap.info)
+        return Pick(score=ts, thesis=thesis, snap_info=snap.info)
+    except Exception as e:
+        log.exception("Failed to score %s: %s", ticker, e)
+        return None
+
+
 def run_universe(
     settings: dict | None = None,
     *,
     limit: int | None = None,
     force_refresh: bool = False,
     sample: bool = False,
+    max_workers: int = 6,
+    cache: Cache | None = None,
 ) -> list[Pick]:
+    """Score the configured universe of tickers.
+
+    Tickers are fetched/scored in parallel with a bounded pool — yfinance
+    handles ~6 concurrent connections well. Cache hits return instantly so
+    warm runs scale near-linearly with worker count.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     settings = settings or load_settings()
     tickers = load_universe(settings)
     if limit:
@@ -79,20 +110,23 @@ def run_universe(
             tickers = rnd.sample(tickers, min(limit, len(tickers)))
         else:
             tickers = tickers[:limit]
-    log.info("Screening %d tickers", len(tickers))
+    log.info("Screening %d tickers (max_workers=%d)", len(tickers), max_workers)
 
-    fetcher = _build_fetcher(settings)
+    fetcher = _build_fetcher(settings, cache=cache)
     picks: list[Pick] = []
-    for i, ticker in enumerate(tickers, 1):
-        try:
-            snap: TickerSnapshot = fetcher.get(ticker, force_refresh=force_refresh)
-            ts = score_ticker(snap, settings)
-            thesis = generate_thesis(ts, snap.info)
-            picks.append(Pick(score=ts, thesis=thesis, snap_info=snap.info))
-        except Exception as e:
-            log.exception("Failed to score %s: %s", ticker, e)
-        if i % 25 == 0:
-            log.info("Progress: %d/%d", i, len(tickers))
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_score_one, t, fetcher, settings, force_refresh=force_refresh): t
+            for t in tickers
+        }
+        for fut in as_completed(futures):
+            completed += 1
+            result = fut.result()
+            if result is not None:
+                picks.append(result)
+            if completed % 100 == 0:
+                log.info("Progress: %d/%d", completed, len(tickers))
 
     picks.sort(key=lambda p: p.score.total, reverse=True)
     return picks

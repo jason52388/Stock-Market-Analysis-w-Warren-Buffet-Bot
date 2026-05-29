@@ -72,6 +72,11 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0) -> TickerSnapshot:
 
 
 class Fetcher:
+    # Transient errors (network/throttle, empty info dict) cache for 1 hour, so
+    # the next weekly run gets a fresh shot. Stable errors (legitimate sub-cap
+    # tickers, delisted) cache for the normal TTL — no reason to refetch.
+    _TRANSIENT_TTL_SECONDS = 60 * 60
+
     def __init__(self, cache: Cache, batch_size: int = 25, batch_sleep_sec: float = 2.0,
                  min_market_cap: float = 0):
         self.cache = cache
@@ -79,17 +84,38 @@ class Fetcher:
         self.batch_sleep_sec = batch_sleep_sec
         self.min_market_cap = min_market_cap
 
+    @staticmethod
+    def _is_transient_error(snap: TickerSnapshot) -> bool:
+        """A fetch is 'transient' when we got no info dict at all — usually
+        yfinance throttling. Distinguish from 'stable' (info present but mcap
+        below threshold, or financials unavailable for known-bad ticker)."""
+        if snap.error is None:
+            return False
+        # Empty info → almost certainly a network/throttle blip; retry sooner.
+        if not snap.info:
+            return True
+        # Anything that came back with a populated info dict is stable.
+        return False
+
     def get(self, ticker: str, *, force_refresh: bool = False) -> TickerSnapshot:
         if not force_refresh:
             cached = self.cache.get("snapshot", ticker)
             if cached is not None:
-                return cached
+                # Honor the transient short TTL even on cached entries — a
+                # transient failure cached a week ago should re-fetch this run.
+                if cached.error and self._is_transient_error(cached):
+                    cached_fresh = self.cache.get(
+                        "snapshot", ticker, ttl_override=self._TRANSIENT_TTL_SECONDS
+                    )
+                    if cached_fresh is None:
+                        cached = None  # fall through to re-fetch
+                if cached is not None:
+                    return cached
         try:
             snap = _fetch_ticker(ticker, min_market_cap=self.min_market_cap)
         except Exception as e:
             log.warning("fetch failed for %s: %s", ticker, e)
             snap = TickerSnapshot(ticker=ticker, error=str(e))
-        # Cache even partial/failed fetches briefly so we don't hammer on retries.
         self.cache.set("snapshot", ticker, snap)
         return snap
 

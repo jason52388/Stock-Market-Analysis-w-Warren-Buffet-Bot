@@ -21,13 +21,6 @@ def _expand(value: Any) -> Any:
     return value
 
 
-def load_settings(path: str | Path = "config/settings.yaml") -> dict[str, Any]:
-    p = Path(path)
-    with p.open() as f:
-        raw = yaml.safe_load(f)
-    return _expand(raw)
-
-
 def repo_root() -> Path:
     """Repo root = parent of the `src` directory containing this file."""
     here = Path(__file__).resolve()
@@ -35,3 +28,18 @@ def repo_root() -> Path:
         if (parent / "pyproject.toml").exists():
             return parent
     return Path.cwd()
+
+
+def load_settings(path: str | Path = "config/settings.yaml") -> dict[str, Any]:
+    """Load settings YAML, resolving relative paths against the repo root.
+
+    Resolving via repo_root() means the CLI works from any cwd — important for
+    cron entries that forget to `cd /app`, for pytest from a subdir, or for
+    one-off `warren-bot screen TICKER` calls from any shell.
+    """
+    p = Path(path)
+    if not p.is_absolute():
+        p = repo_root() / p
+    with p.open() as f:
+        raw = yaml.safe_load(f)
+    return _expand(raw)

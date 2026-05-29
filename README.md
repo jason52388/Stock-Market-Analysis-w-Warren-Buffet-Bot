@@ -1,8 +1,14 @@
 # Warren Buffett / Berkshire Hathaway Bot
 
-A weekly stock screener that ranks S&P 500 + major international ADRs against
+A weekly stock screener that ranks the full US common-stock universe
+(~5,400 names) plus major international ADRs and 200+ non-US listings
+(LSE, Tokyo, Hong Kong, Euronext, Toronto, Bombay, ASX, etc.) against
 Buffett/Munger criteria, emails you a digest with heat-map cards + thesis for
-each pick, and mirrors the results to a Notion database.
+each pick, and mirrors the results to a Notion database. An interactive
+dashboard ships as the email attachment with tabs for blended Buffett ∩
+hedge-fund recommendations, full picks, Berkshire's 13F portfolio, dataroma
+super-investor flows, a weekly tech/AI/industry briefing, and a
+sortable/searchable market KPI table.
 
 > Quantitative proxies, not Buffett-quality qualitative judgment. Treat the
 > output as a watchlist generator, not a buy list.
@@ -25,6 +31,26 @@ Each ticker is graded 0–100 on five dimensions, then weighted into a total:
 - **< 45** → not surfaced
 
 Thresholds and weights live in `config/settings.yaml` — adjust freely.
+
+## Tests
+
+```bash
+uv pip install -e ".[dev]"
+.venv/bin/pytest
+```
+
+The suite is pure unit tests — no network, no yfinance, no SMTP — so it runs in
+under 5 seconds. Covers the recently-touched risky paths:
+
+- Cache thread safety (parallel fetcher regression guard)
+- Transient vs stable fetch error TTL (`Fetcher._is_transient_error`)
+- Piecewise scoring math at boundaries (including the `target=0` no-divide-by-zero case)
+- `split_picks` bucket boundaries (strong / angle / partial)
+- Recommendation tier classifier + composite math
+- Dataroma tooltip + activity parsing
+- Settings load + env-var expansion (incl. relative-path resolution via `repo_root()`)
+- Briefing classify / dedup / config schema validation
+- Email send retry policy (auth errors fail fast; connection errors retry 3×)
 
 ## Quick start
 

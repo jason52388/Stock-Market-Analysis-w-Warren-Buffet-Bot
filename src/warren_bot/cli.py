@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -10,6 +11,7 @@ import click
 from .config import load_settings, repo_root
 from .pipeline import (
     Pick,
+    build_cache,
     gather_stock_news,
     run_universe,
     screen_one,
@@ -89,7 +91,18 @@ def run(
 ) -> None:
     """Run the full pipeline: screen → score → fetch news → render dashboard → deliver."""
     settings = ctx.obj["settings"]
-    picks = run_universe(settings, limit=limit, force_refresh=force_refresh, sample=sample)
+
+    # One shared Cache for the entire run — used by the screener, dataroma,
+    # and the BRK portfolio fetch. Prune stale entries up front so the SQLite
+    # file doesn't grow unbounded across weekly runs.
+    cache = build_cache(settings)
+    pruned = cache.prune()
+    if pruned:
+        click.echo(f"Cache prune: removed {pruned} stale entries")
+
+    picks = run_universe(
+        settings, limit=limit, force_refresh=force_refresh, sample=sample, cache=cache
+    )
     strong, angles, partial = split_picks(picks, settings)
     surfaced = strong + angles + partial
     click.echo(f"Scored {len(picks)} tickers: {len(strong)} strong, "
@@ -107,7 +120,7 @@ def run(
 
     from .news.briefing import Briefing, build_briefing
     if skip_news:
-        briefing = Briefing(generated_at=__import__("datetime").datetime.utcnow())
+        briefing = Briefing(generated_at=datetime.now(timezone.utc))
     else:
         click.echo("Building weekly briefing…")
         briefing = build_briefing()
@@ -115,23 +128,26 @@ def run(
                    f"{len(briefing.topics)} topics")
 
     # Hedge fund holdings/buys/sells from dataroma + Berkshire's full portfolio.
+    # Reuses the shared `cache` instance built above — one SQLite connection
+    # for the whole run.
     hedge_views = {}
     brk_portfolio = None
     if not skip_news:
         click.echo("Fetching hedge fund activity (dataroma)…")
-        from .data.cache import Cache
         from .hedge_funds.dataroma import (
             fetch_hedge_fund_views,
             fetch_manager_portfolio,
         )
-        data_cfg = settings["data"]
-        hf_cache = Cache(repo_root() / data_cfg["cache_path"],
-                         ttl_seconds=int(data_cfg["cache_ttl_hours"]) * 3600)
-        hedge_views = fetch_hedge_fund_views(hf_cache, max_rows=50)
-        click.echo(f"  holdings={len(hedge_views.get('holdings').rows if hedge_views.get('holdings') else [])} "
-                   f"buys={len(hedge_views.get('buys').rows if hedge_views.get('buys') else [])} "
-                   f"sells={len(hedge_views.get('sells').rows if hedge_views.get('sells') else [])}")
-        brk_portfolio = fetch_manager_portfolio(hf_cache, "BRK")
+        hedge_views = fetch_hedge_fund_views(cache, max_rows=50)
+        holdings = hedge_views.get("holdings")
+        buys = hedge_views.get("buys")
+        sells = hedge_views.get("sells")
+        click.echo(
+            f"  holdings={len(holdings.rows) if holdings else 0} "
+            f"buys={len(buys.rows) if buys else 0} "
+            f"sells={len(sells.rows) if sells else 0}"
+        )
+        brk_portfolio = fetch_manager_portfolio(cache, "BRK")
         if brk_portfolio:
             click.echo(f"  berkshire={len(brk_portfolio.positions)} positions "
                        f"({len(brk_portfolio.active_positions)} active)")
@@ -163,26 +179,39 @@ def run(
     if skip_delivery:
         return
 
+    # Delivery failures must NOT abort the run — the cron line chains an archive
+    # snapshot + index regen after this, and a Gmail/Notion hiccup shouldn't
+    # forfeit the week's archive. Each channel is independently try/excepted.
     email_cfg = settings["delivery"]["email"]
     if email_cfg.get("enabled") and os.environ.get("GMAIL_APP_PASSWORD"):
-        from .delivery.email_render import render_summary
-        from .delivery.email_send import send_email
-        html = render_summary(strong, angles, partial,
-                              total_scored=len(picks),
-                              briefing_count=briefing.total_articles)
-        subject = (f"Buffett Bot — {len(strong)} strong, {len(angles)} angles, "
-                   f"{len(partial)} partial, {briefing.total_articles} briefing")
-        send_email(subject, html, email_cfg, attachments=[dash_path])
-        click.echo("Email sent (with dashboard attached)")
+        try:
+            from .delivery.email_render import render_summary
+            from .delivery.email_send import send_email
+            html = render_summary(strong, angles, partial,
+                                  total_scored=len(picks),
+                                  briefing_count=briefing.total_articles)
+            subject = (f"Buffett Bot — {len(strong)} strong, {len(angles)} angles, "
+                       f"{len(partial)} partial, {briefing.total_articles} briefing")
+            send_email(subject, html, email_cfg, attachments=[dash_path])
+            click.echo("Email sent (with dashboard attached)")
+        except Exception as e:
+            click.echo(f"Email delivery FAILED: {type(e).__name__}: {e}", err=True)
+            logging.getLogger(__name__).exception("email send failed")
     else:
         click.echo("Email delivery skipped (disabled or no GMAIL_APP_PASSWORD)")
 
     notion_cfg = settings["delivery"]["notion"]
     if notion_cfg.get("enabled") and os.environ.get("NOTION_API_KEY") \
             and notion_cfg.get("database_id"):
-        from .delivery.notion_sync import sync_picks
-        sync_picks(strong + angles, notion_cfg)
-        click.echo("Notion synced")
+        try:
+            from .delivery.notion_sync import sync_picks
+            # Sync everything we'd show in the email — partial picks land in
+            # Notion too so the DB is a complete record of what was surfaced.
+            sync_picks(strong + angles + partial, notion_cfg)
+            click.echo("Notion synced")
+        except Exception as e:
+            click.echo(f"Notion sync FAILED: {type(e).__name__}: {e}", err=True)
+            logging.getLogger(__name__).exception("notion sync failed")
     else:
         click.echo("Notion delivery skipped (disabled or missing config)")
 

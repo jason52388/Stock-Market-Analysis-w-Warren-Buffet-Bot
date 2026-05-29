@@ -155,7 +155,6 @@ def generate_thesis(ts: TickerScore, snap_info: dict | None = None) -> Thesis:
             watch_outs=f"Data error: {ts.error or 'missing financials'}.",
         )
 
-    qual = _qual(ts.total)
     if ts.total >= 75:
         bucket = "Strong match"
     elif ts.total >= 60:

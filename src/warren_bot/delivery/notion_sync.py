@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
 
 from notion_client import Client
@@ -56,7 +56,7 @@ def _props(p: Pick) -> dict:
         "Consistency": {"number": _dim_score(p, "Consistency")},
         "Valuation": {"number": _dim_score(p, "Valuation / Margin of Safety")},
         "CapAlloc": {"number": _dim_score(p, "Capital Allocation")},
-        "Last Updated": {"date": {"start": datetime.utcnow().date().isoformat()}},
+        "Last Updated": {"date": {"start": datetime.now(timezone.utc).date().isoformat()}},
         "Thesis": {"rich_text": [{"text": {"content": thesis_md}}]},
     }
     if s.sector:
@@ -71,8 +71,15 @@ def _props(p: Pick) -> dict:
 
 
 def sync_picks(picks: Iterable[Pick], notion_cfg: dict) -> None:
-    client = Client(auth=os.environ["NOTION_API_KEY"])
-    db_id = notion_cfg["database_id"]
+    api_key = os.environ.get("NOTION_API_KEY")
+    if not api_key:
+        raise RuntimeError("NOTION_API_KEY env var is not set — cannot sync to Notion.")
+    db_id = notion_cfg.get("database_id")
+    if not db_id:
+        raise RuntimeError(
+            "notion.database_id missing from settings — set NOTION_DATABASE_ID env var."
+        )
+    client = Client(auth=api_key)
 
     for p in picks:
         if p.score.error:

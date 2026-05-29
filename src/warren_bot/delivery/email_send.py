@@ -11,6 +11,29 @@ import smtplib
 from email.message import EmailMessage
 from pathlib import Path
 
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+_SMTP_TIMEOUT_SECONDS = 30
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry only true connection-level failures.
+
+    NB: `SMTPAuthenticationError` inherits from `OSError` via the SMTP exception
+    chain, so we can't just list `OSError` in the retry set — that would retry
+    bad-password failures three times before giving up, which is both pointless
+    and an audit-log smell on the Gmail side. Filter SMTP response errors out
+    explicitly: those represent a server-side rejection that retrying can't fix.
+    """
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return False
+    return isinstance(exc, (
+        smtplib.SMTPServerDisconnected,
+        smtplib.SMTPConnectError,
+        TimeoutError,
+        ConnectionError,
+    ))
+
 
 def send_email(subject: str, html: str, email_cfg: dict,
                attachments: list[Path] | None = None) -> None:
@@ -31,8 +54,26 @@ def send_email(subject: str, html: str, email_cfg: dict,
             msg.add_attachment(data, maintype="application", subtype="octet-stream",
                                filename=path.name)
 
-    password = os.environ["GMAIL_APP_PASSWORD"]
-    with smtplib.SMTP(email_cfg["smtp_host"], int(email_cfg["smtp_port"])) as smtp:
+    password = os.environ.get("GMAIL_APP_PASSWORD")
+    if not password:
+        raise RuntimeError(
+            "GMAIL_APP_PASSWORD env var is not set — cannot authenticate to Gmail SMTP."
+        )
+    _do_send(msg, email_cfg, password)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    retry=retry_if_exception(_is_retryable),
+    reraise=True,
+)
+def _do_send(msg: EmailMessage, email_cfg: dict, password: str) -> None:
+    with smtplib.SMTP(
+        email_cfg["smtp_host"],
+        int(email_cfg["smtp_port"]),
+        timeout=_SMTP_TIMEOUT_SECONDS,
+    ) as smtp:
         smtp.starttls()
         smtp.login(email_cfg["from_addr"], password)
         smtp.send_message(msg)

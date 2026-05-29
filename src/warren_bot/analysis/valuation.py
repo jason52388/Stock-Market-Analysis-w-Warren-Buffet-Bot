@@ -13,7 +13,6 @@ class ValuationSet:
     price: float | None
     market_cap: float | None
     pe_ratio: float | None
-    pe_median_10y: float | None
     pe_vs_median_ratio: float | None         # current / median; <1 = cheap vs history
     fcf_yield_pct: float | None
     owner_earnings_latest: float | None
@@ -116,7 +115,6 @@ def compute_valuation(snap: TickerSnapshot) -> ValuationSet:
         price=float(price) if price else None,
         market_cap=float(market_cap) if market_cap else None,
         pe_ratio=float(pe) if pe else None,
-        pe_median_10y=pe_median,
         pe_vs_median_ratio=pe_vs_median,
         fcf_yield_pct=fcf_yield,
         owner_earnings_latest=oe_latest,

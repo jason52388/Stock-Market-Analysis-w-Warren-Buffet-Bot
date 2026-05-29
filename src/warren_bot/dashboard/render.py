@@ -14,19 +14,6 @@ from ..pipeline import Pick
 from ..recommendations import Recommendation
 
 
-def _description(p: Pick, limit: int = 380) -> str:
-    """Pick the best available business description from snap.info."""
-    info = p.snap_info or {}
-    desc = info.get("longBusinessSummary") or info.get("description") or ""
-    desc = desc.strip()
-    if not desc:
-        return ""
-    if len(desc) <= limit:
-        return desc
-    cut = desc[:limit].rsplit(" ", 1)[0]
-    return cut + "…"
-
-
 def _full_description(p: Pick) -> str:
     info = p.snap_info or {}
     return (info.get("longBusinessSummary") or info.get("description") or "").strip()
@@ -85,6 +72,7 @@ def build_kpi_rows(picks: list[Pick]) -> list[dict[str, Any]]:
 _TEMPLATE = r"""
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Buffett Bot — {{ date }}</title>
 <style>
 :root {
@@ -347,6 +335,59 @@ table.kpi td.na { color: var(--na); }
                     padding: 5px 12px; font-size: 12px; cursor: pointer; }
 .kpi-pager button:disabled { opacity: .4; cursor: default; }
 .kpi-pager .page-info { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Wrap any wide table so it scrolls horizontally inside its card on small screens. */
+.hf-section { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 640px) {
+  .wrap { padding: 14px 12px 40px; }
+  header { gap: 8px; }
+  header h1 { font-size: 19px; }
+  header .sub { font-size: 12px; }
+
+  /* Top tabs and inner sub-tabs: scroll horizontally instead of wrapping. */
+  .tabs, .hf-tab-bar, .card-tab-bar {
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar, .hf-tab-bar::-webkit-scrollbar,
+  .card-tab-bar::-webkit-scrollbar { display: none; }
+  .tab-btn, .hf-tab-btn { padding: 10px 12px; font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
+  .card-tab-btn { white-space: nowrap; flex: 0 0 auto; }
+
+  /* Filter controls: one column, tighter. */
+  .controls { grid-template-columns: 1fr; gap: 10px; padding: 10px 12px; }
+
+  /* Pick cards: per-dimension grid stacks. */
+  .dim-grid { grid-template-columns: 1fr; }
+  .pick-head { gap: 6px; }
+  .score-pill { margin-left: 0; }
+
+  /* Recommendation cards: collapse 3-col layout, move composite under rank. */
+  .rec { grid-template-columns: auto 1fr; gap: 8px 12px; padding: 12px 14px; }
+  .rec .rank { font-size: 18px; min-width: 28px; }
+  .rec .composite { grid-column: 1 / -1; text-align: left;
+                    display: flex; align-items: baseline; gap: 6px;
+                    border-top: 1px dashed var(--line); padding-top: 8px; }
+  .rec .composite .num { font-size: 18px; }
+  .rec-body .head { gap: 6px; }
+
+  /* Berkshire summary: 2 stats per row instead of 5. */
+  .brk-summary { grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 12px; }
+  .brk-summary .stat .val { font-size: 16px; }
+
+  /* Hedge / Berkshire tables: tighter cells, smaller font (scroll wrapper above
+     handles overflow). */
+  table.hf { font-size: 12px; }
+  table.hf th, table.hf td { padding: 5px 7px; }
+
+  /* KPI table pager wraps onto two lines if needed. */
+  .kpi-pager { flex-wrap: wrap; gap: 8px; }
+
+  /* News and article items: a hair more breathing room. */
+  .brief-topic { padding: 12px 14px; }
+  .brief-topic h3 { font-size: 15px; }
+}
 </style>
 </head>
 <body><div class="wrap">
@@ -1427,7 +1468,6 @@ def render_dashboard(
     env = Environment(autoescape=True)
     env.globals["dim_score"] = _dim_score
     env.globals["stock_news"] = stock_news
-    env.globals["description"] = _description
     env.globals["full_description"] = _full_description
     macros = env.from_string(_PICK_CARD).module
     template = env.from_string(_TEMPLATE)

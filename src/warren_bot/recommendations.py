@@ -63,10 +63,11 @@ def build_recommendations(
 ) -> list[Recommendation]:
     """Build the recommendation list.
 
-    `only_overlap=True` (default) restricts to names that hit *both* the quant
-    screen and at least one dataroma view — the user's "overlapping findings"
-    ask. Pass False to also include strong quant picks that no super-investor
-    is touching.
+    `only_overlap=False` (default) includes strong quant picks that no
+    super-investor is currently touching — they end up in the "quant-only"
+    tier in the dashboard so the tab is never empty. Pass `only_overlap=True`
+    to restrict to names that hit *both* the quant screen and at least one
+    dataroma view.
     """
     holdings_view = hedge_views.get("holdings")
     buys_view = hedge_views.get("buys")

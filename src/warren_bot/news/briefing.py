@@ -139,9 +139,15 @@ def build_briefing(
     per_topic: int = 8,
 ) -> Briefing:
     cfg_path = config_path or (repo_root() / "config" / "briefing_sources.yaml")
-    cfg = yaml.safe_load(cfg_path.read_text())
-    sources = cfg["sources"]
-    topics_cfg = cfg["topics"]
+    cfg = yaml.safe_load(cfg_path.read_text()) or {}
+    sources = cfg.get("sources")
+    topics_cfg = cfg.get("topics")
+    if not isinstance(sources, list) or not isinstance(topics_cfg, dict):
+        raise ValueError(
+            f"{cfg_path} is malformed: expected top-level 'sources' (list) and "
+            f"'topics' (mapping). Got sources={type(sources).__name__}, "
+            f"topics={type(topics_cfg).__name__}."
+        )
 
     all_articles: list[Article] = []
     with ThreadPoolExecutor(max_workers=8) as pool:
