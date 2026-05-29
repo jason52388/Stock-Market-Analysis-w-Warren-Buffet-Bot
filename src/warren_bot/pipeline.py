@@ -52,11 +52,15 @@ def _build_fetcher(settings: dict, cache: Cache | None = None) -> Fetcher:
     data_cfg = settings["data"]
     thr = settings.get("throttle", {})
     cache = cache or build_cache(settings)
+    stmt_ttl_h = data_cfg.get("statement_ttl_hours")
+    price_ttl_h = data_cfg.get("price_ttl_hours")
     return Fetcher(
         cache,
         batch_size=int(data_cfg["yf_batch_size"]),
         batch_sleep_sec=float(data_cfg["yf_batch_sleep_sec"]),
         min_market_cap=float(data_cfg.get("min_market_cap_usd", 0) or 0),
+        statement_ttl_seconds=(int(stmt_ttl_h) * 3600 if stmt_ttl_h is not None else None),
+        price_ttl_seconds=(int(price_ttl_h) * 3600 if price_ttl_h is not None else None),
         requests_per_sec=float(thr.get("requests_per_sec", 0) or 0),
         blank_retries=int(thr.get("blank_retries", 0) or 0),
         blank_retry_backoff_sec=float(thr.get("blank_retry_backoff_sec", 1.5)),

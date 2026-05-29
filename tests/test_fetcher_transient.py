@@ -170,6 +170,62 @@ class TestTransientShortTTL:
         assert result.info["marketCap"] == 3e12
         cache.close()
 
+class TestStatementVsPriceTtl:
+    """Statements are cached far longer than the price, so a weekly run reuses
+    quarterly-stable statements and only refreshes the quote — and a quote
+    refresh must NOT reset the statement clock."""
+
+    def _full_snap(self, info=None, **ts):
+        import pandas as pd
+        df = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["Total Revenue"])
+        return TickerSnapshot(ticker="AAPL", info=info or {"x": 1}, income=df, balance=df,
+                              cashflow=df, price_history=df, **ts)
+
+    def test_stale_statements_trigger_full_refetch(self, tmp_path):
+        import time
+        from warren_bot.data.cache import Cache
+        cache = Cache(tmp_path / "s.sqlite", ttl_seconds=3600)
+        fetcher = Fetcher(cache, min_market_cap=0,
+                          statement_ttl_seconds=10 * 24 * 3600)  # 10 days
+        now = time.time()
+        old = self._full_snap(statements_asof=now - 20 * 24 * 3600,  # 20d > 10d -> stale
+                              price_asof=now)
+        cache.set("snapshot", "AAPL", old)
+        fresh = self._full_snap(info={"y": 2}, statements_asof=now, price_asof=now)
+        with patch("warren_bot.data.fetcher._fetch_ticker", return_value=fresh) as mf:
+            res = fetcher.get("AAPL")
+            mf.assert_called_once()
+        assert res.info == {"y": 2}
+        cache.close()
+
+    def test_fresh_statements_stale_price_refreshes_quote_only(self, tmp_path):
+        import time
+        from warren_bot.data.cache import Cache
+        cache = Cache(tmp_path / "s.sqlite", ttl_seconds=3600)
+        fetcher = Fetcher(cache, min_market_cap=0,
+                          statement_ttl_seconds=30 * 24 * 3600, price_ttl_seconds=3600)
+        now = time.time()
+        stmt_asof = now - 5 * 24 * 3600          # 5d old statements -> still fresh
+        snap = self._full_snap(statements_asof=stmt_asof, price_asof=now - 2 * 3600)  # price 2h>1h stale
+        cache.set("snapshot", "AAPL", snap)
+        with patch("warren_bot.data.fetcher._fetch_ticker") as mfetch, \
+             patch("warren_bot.data.fetcher._refresh_quote", return_value=True) as mref:
+            res = fetcher.get("AAPL")
+            mfetch.assert_not_called()       # NO full statement pull
+            mref.assert_called_once()        # just the cheap quote refresh
+        assert res.statements_asof == stmt_asof   # statement clock preserved
+        cache.close()
+
+    def test_refresh_quote_preserves_statement_clock(self):
+        from warren_bot.data.fetcher import _refresh_quote
+        snap = TickerSnapshot(ticker="AAPL", info={}, statements_asof=123.0)
+        with patch("warren_bot.data.fetcher.yf.Ticker") as MT:
+            MT.return_value.fast_info = {"last_price": 10.0, "market_cap": 1e9}
+            _refresh_quote(snap, RateLimiter(0))
+        assert snap.statements_asof == 123.0           # untouched
+        assert snap.info["currentPrice"] == 10.0       # price updated
+
+
 class TestRateLimiter:
     def test_spaces_calls_to_the_configured_rate(self):
         import time

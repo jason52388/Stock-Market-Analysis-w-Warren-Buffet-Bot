@@ -87,7 +87,16 @@ jobs:
             # email/Notion on a push — those still go out only on the weekly
             # cron. Give the container a moment to be ready before exec.
             sleep 3
-            docker compose exec -T bot warren-bot run --skip-delivery
+            # Bound the refresh: a WARM cache (the normal case, since statements
+            # are cached ~30d) finishes in minutes, but a COLD cache (first
+            # deploy / wiped volume) would re-screen the whole universe for hours
+            # and blow the SSH timeout. Cap it; on timeout the previous dashboard
+            # is kept and the authoritative full run is the weekly cron.
+            if timeout 1800 docker compose exec -T bot warren-bot run --skip-delivery; then
+              echo "Website refresh complete"
+            else
+              echo "Website refresh did not finish within 30m (likely a cold cache); keeping previous dashboard"
+            fi
             docker compose exec -T bot /app/deploy/build-index.sh
 
             docker image prune -f

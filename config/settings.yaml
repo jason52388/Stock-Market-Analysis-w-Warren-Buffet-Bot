@@ -48,7 +48,12 @@ criteria:
 # Data fetching
 data:
   cache_path: .cache/warren_bot.sqlite
-  cache_ttl_hours: 168            # 1 week
+  cache_ttl_hours: 168            # 1 week — default TTL (hedge-fund/dataroma data)
+  # Statements only change on quarterly earnings, so cache them far longer than
+  # the price. This keeps the WEEKLY run cheap: statements are reused and only a
+  # ~1-request price refresh runs per name, instead of a full cold re-pull.
+  statement_ttl_hours: 720        # 30 days
+  price_ttl_hours: 24             # refresh price/market cap on hits older than this
   yf_max_retries: 3
   yf_batch_size: 25
   yf_batch_sleep_sec: 2

@@ -117,6 +117,7 @@ class TickerSnapshot:
     price_history: pd.DataFrame | None = None
     error: str | None = None
     price_asof: float | None = None          # epoch secs when price/mcap last refreshed
+    statements_asof: float | None = None     # epoch secs when statements were last pulled
 
     def missing_statements(self) -> list[str]:
         """Which of the REQUIRED_STATEMENTS came back empty/absent."""
@@ -189,7 +190,10 @@ def _fetch_ticker(ticker: str, min_market_cap: float = 0, *,
         lambda: yft.history(period="10y", interval="1mo", auto_adjust=False),
         limiter, attempts=attempts, backoff=blank_retry_backoff_sec)
 
-    snap.price_asof = time.time()
+    now = time.time()
+    snap.price_asof = now
+    snap.statements_asof = now   # stamp the statement pull so cheap quote
+    # refreshes (which re-cache the snapshot) don't reset the statement clock.
     missing = snap.missing_statements()
     if missing:
         # Don't score around a hole. A partial pull (e.g. income + balance but a
@@ -229,13 +233,19 @@ class Fetcher:
     # the next weekly run gets a fresh shot. Stable errors (legitimate sub-cap
     # tickers, delisted) cache for the normal TTL — no reason to refetch.
     _TRANSIENT_TTL_SECONDS = 60 * 60
-    # Statements are cached for the full TTL, but price/market cap go stale fast.
-    # Refresh just the quote on a cache hit older than this (default 1 day).
+    # Price/market cap go stale fast — refresh just the quote on a cache hit
+    # older than this (default 1 day) without re-pulling statements.
     _PRICE_TTL_SECONDS = 24 * 60 * 60
+    # Statements only change on quarterly earnings, so they're cached far longer
+    # than the price (default 30 days). This is what keeps the WEEKLY run cheap:
+    # statements are reused (a ~1-request quote refresh per name) instead of a
+    # full multi-request re-pull, while a longer-dormant cache still refreshes.
+    _STATEMENT_TTL_SECONDS = 30 * 24 * 60 * 60
 
     def __init__(self, cache: Cache, batch_size: int = 25, batch_sleep_sec: float = 2.0,
                  min_market_cap: float = 0, price_ttl_seconds: int | None = None,
-                 *, requests_per_sec: float = 0.0, blank_retries: int = 0,
+                 *, statement_ttl_seconds: int | None = None,
+                 requests_per_sec: float = 0.0, blank_retries: int = 0,
                  blank_retry_backoff_sec: float = 1.5, yf_internal_retries: int = 0):
         self.cache = cache
         self.batch_size = batch_size
@@ -243,6 +253,8 @@ class Fetcher:
         self.min_market_cap = min_market_cap
         self.price_ttl_seconds = (price_ttl_seconds if price_ttl_seconds is not None
                                   else self._PRICE_TTL_SECONDS)
+        self.statement_ttl_seconds = (statement_ttl_seconds if statement_ttl_seconds is not None
+                                      else self._STATEMENT_TTL_SECONDS)
         # Throttle controls. The limiter is shared across all worker threads, so
         # the aggregate Yahoo request rate stays bounded regardless of pool size.
         self.limiter = RateLimiter(requests_per_sec)
@@ -256,6 +268,15 @@ class Fetcher:
         if snap.price_asof is None:
             return True
         return (time.time() - snap.price_asof) > self.price_ttl_seconds
+
+    def _statements_are_stale(self, snap: TickerSnapshot) -> bool:
+        # Judged on `statements_asof` (stamped when statements were pulled), NOT
+        # the cache row's age — a quote refresh re-caches the row and would
+        # otherwise reset the statement clock and keep statements alive forever.
+        asof = getattr(snap, "statements_asof", None)
+        if asof is None:
+            return True
+        return (time.time() - asof) > self.statement_ttl_seconds
 
     @staticmethod
     def _is_transient_error(snap: TickerSnapshot) -> bool:
@@ -282,7 +303,10 @@ class Fetcher:
 
     def get(self, ticker: str, *, force_refresh: bool = False) -> TickerSnapshot:
         if not force_refresh:
-            cached = self.cache.get("snapshot", ticker)
+            # Read with the (long) statement TTL so quarterly-stable statements
+            # are reused across weekly runs instead of re-pulled every time.
+            cached = self.cache.get("snapshot", ticker,
+                                    ttl_override=self.statement_ttl_seconds)
             if cached is not None:
                 # Honor the transient short TTL even on cached entries — a
                 # transient failure cached a week ago should re-fetch this run.
@@ -293,12 +317,16 @@ class Fetcher:
                     if cached_fresh is None:
                         cached = None  # fall through to re-fetch
                 if cached is not None:
-                    # Statements are still fresh, but refresh the price if it's
-                    # gone stale so the valuation doesn't run on a week-old quote.
-                    if cached.ok and self._price_is_stale(cached):
-                        if _refresh_quote(cached, self.limiter):
-                            self.cache.set("snapshot", ticker, cached)
-                    return cached
+                    if cached.ok and self._statements_are_stale(cached):
+                        cached = None  # statements aged out -> full re-pull below
+                    else:
+                        # Statements still fresh. Refresh just the price if it's
+                        # gone stale so valuation doesn't run on an old quote —
+                        # a single request vs a full multi-request statement pull.
+                        if cached.ok and self._price_is_stale(cached):
+                            if _refresh_quote(cached, self.limiter):
+                                self.cache.set("snapshot", ticker, cached)
+                        return cached
         try:
             snap = _fetch_ticker(
                 ticker, min_market_cap=self.min_market_cap,
