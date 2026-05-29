@@ -25,7 +25,8 @@ www.yalamanstockmarket.com {
     # routed here and file_server serves archive/index.html (the "Past runs"
     # page built by build-index.sh), with `browse` as a fallback listing for
     # any sub-path without an index.
-    handle /archive /archive/* {
+    @archive path /archive /archive/*
+    handle @archive {
         file_server browse
     }
 
