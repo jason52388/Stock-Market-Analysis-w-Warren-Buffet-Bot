@@ -1,0 +1,42 @@
+name: Run bot now
+
+# On-demand bot run on the VPS. Runs the same command the weekly cron runs,
+# then snapshots the archive and rebuilds the index page. Use this to test the
+# pipeline or force a fresh dashboard without waiting for Sunday.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cap number of tickers (blank = full universe; 30 = quick test)"
+        required: false
+        default: "30"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Run bot over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 60m
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.VPS_PATH }}"
+            LIMIT="${{ github.event.inputs.limit }}"
+            ARGS=""
+            if [ -n "$LIMIT" ]; then ARGS="--limit $LIMIT"; fi
+
+            # Run the bot inside the container (inherits env from docker-compose).
+            docker compose exec -T bot warren-bot run $ARGS
+
+            # Snapshot + rebuild the index, same as the weekly cron line.
+            docker compose exec -T bot sh -c \
+              'cp out/dashboard.html "out/archive/$(date +%Y-%m-%d).html" 2>/dev/null; /app/deploy/build-index.sh'
+
+            echo "=== out/ contents ==="
+            docker compose exec -T bot ls -la out out/archive
