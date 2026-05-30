@@ -126,6 +126,16 @@ def run_universe(
             tickers = rnd.sample(tickers, min(limit, len(tickers)))
         else:
             tickers = tickers[:limit]
+    else:
+        # Shuffle the FULL universe (deterministically) so processing order isn't
+        # alphabetical. Yahoo throttling or the deploy-time `timeout` can cut a run
+        # short; with A→Z order a partial run yields only early-alphabet names (the
+        # "website only shows A–C companies" symptom). A seeded shuffle makes any
+        # partial run a representative A–Z sample, while a complete run is
+        # unaffected (final output is ranked by score, not input order). Seed is
+        # fixed so cache warming stays reproducible across runs.
+        import random
+        random.Random(1).shuffle(tickers)
     log.info("Screening %d tickers (max_workers=%d)", len(tickers), max_workers)
 
     fetcher = _build_fetcher(settings, cache=cache)
