@@ -1,29 +1,38 @@
 name: Run bot now
 
-# On-demand bot run on the VPS. Runs the same command the weekly cron runs,
-# then snapshots the archive and rebuilds the index page. Use this to test the
-# pipeline or force a fresh dashboard without waiting for Sunday.
+# On-demand full screen on the VPS. This is the manual path to a fresh, COMPLETE
+# dashboard without waiting for the Sunday cron — use it after a deploy, or any
+# time you want to refresh the data.
+#
+# The run is DETACHED inside the container (docker compose exec -d), so a full
+# ~5,673-ticker yfinance screen (hours) is NOT bound by the SSH session or any
+# GitHub-job timeout — the SSH step just kicks it off and returns. The bot writes
+# out/dashboard.html when it finishes; a chained snapshot+index rebuild then
+# publishes it. Re-running while one is in flight is refused (lock file) so two
+# screens can't fight over the cache.
+#
+# Progress: tail /var/log/warren-run.log in the container, or just watch the site.
 
 on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Cap number of tickers (blank = full universe; 30 = quick test)"
+        description: "Cap number of tickers (blank = FULL universe; 30 = quick test)"
         required: false
-        default: "30"
+        default: ""
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10   # we only KICK OFF the run; it continues after we leave
     steps:
-      - name: Run bot over SSH
+      - name: Kick off detached bot run over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          command_timeout: 60m
+          command_timeout: 5m
           script: |
             set -euo pipefail
             cd "${{ secrets.VPS_PATH }}"
@@ -31,12 +40,26 @@ jobs:
             ARGS=""
             if [ -n "$LIMIT" ]; then ARGS="--limit $LIMIT"; fi
 
-            # Run the bot inside the container (inherits env from docker-compose).
-            docker compose exec -T bot warren-bot run $ARGS
+            # Refuse to start if a run is already in flight (avoids two screens
+            # racing on the shared cache). The lock is cleared when the run ends.
+            if docker compose exec -T bot test -f /tmp/warren-run.lock; then
+              echo "A bot run is already in progress (lock present). Aborting."
+              exit 1
+            fi
 
-            # Snapshot + rebuild the index, same as the weekly cron line.
-            docker compose exec -T bot sh -c \
-              'cp out/dashboard.html "out/archive/$(date +%Y-%m-%d).html" 2>/dev/null; /app/deploy/build-index.sh'
-
-            echo "=== out/ contents ==="
-            docker compose exec -T bot ls -la out out/archive
+            # Detached (-d): the screen + snapshot + index rebuild run INSIDE the
+            # container and keep going after this SSH session closes. Full output
+            # goes to a log in the (persistent) out volume for inspection.
+            docker compose exec -T -d bot sh -c '
+              touch /tmp/warren-run.lock
+              {
+                echo "=== run started $(date -u) (args: '"$ARGS"') ==="
+                warren-bot run '"$ARGS"'
+                cp out/dashboard.html "out/archive/$(date +%Y-%m-%d).html" 2>/dev/null || true
+                /app/deploy/build-index.sh
+                echo "=== run finished $(date -u) ==="
+              } >> out/warren-run.log 2>&1
+              rm -f /tmp/warren-run.lock
+            '
+            echo "Detached full run started. It continues on the VPS after this"
+            echo "workflow exits; watch the website or out/warren-run.log for completion."
