@@ -109,3 +109,52 @@ class TestAiDisruptionData:
 
         assert data["positive"] == []
         assert [row["ticker"] for row in data["negative"]] == ["AISTAFF"]
+
+
+class TestAiDisruptionNarrative:
+    """Per-stock reasoning/watch text should be curated from each company's own
+    signals, not the old shared boilerplate."""
+
+    def test_reasoning_is_per_company_not_identical(self):
+        picks = [
+            _pick("CHIPCO", "Designs AI semiconductor and GPU accelerator chips."),
+            _pick("SECCO", "AI-driven cybersecurity platform protecting cloud workloads."),
+        ]
+        data = build_ai_disruption_data(picks)
+        rows = {r["ticker"]: r for r in data["positive"]}
+        assert set(rows) == {"CHIPCO", "SECCO"}
+
+        # Each insight names its own company and reflects its own angle.
+        assert rows["CHIPCO"]["insight"].startswith("CHIPCO Co ")
+        assert rows["SECCO"]["insight"].startswith("SECCO Co ")
+        assert rows["CHIPCO"]["insight"] != rows["SECCO"]["insight"]
+        # And the tailored "what to watch" differs too (semiconductor vs security).
+        assert rows["CHIPCO"]["watch"] != rows["SECCO"]["watch"]
+        # No leftover boilerplate phrasing.
+        assert "Likely beneficiary because" not in rows["CHIPCO"]["insight"]
+
+    def test_negative_watch_names_the_at_risk_activity(self):
+        picks = [_pick("BPO", "AI automation across outsourcing and back office business process work.",
+                       sector="Industrials")]
+        data = build_ai_disruption_data(picks)
+        neg = data["negative"][0]
+        assert neg["insight"].startswith("BPO Co ")
+        # The at-risk workflow surfaces in the watch line.
+        assert any(term in neg["watch"] for term in ("outsourcing", "back office", "business process"))
+
+    def test_company_description_is_populated(self):
+        summary = "Cloud infrastructure platform for artificial intelligence workloads."
+        data = build_ai_disruption_data([_pick("AICLOUD", summary)])
+        assert data["positive"][0]["description"] == summary
+
+
+class TestTemplateCompiles:
+    def test_full_template_compiles_with_subtabs(self):
+        # Guards against Jinja syntax errors in the restructured disruption card.
+        from warren_bot.dashboard.render import _TEMPLATE
+
+        env = Environment(autoescape=True)
+        env.from_string(_TEMPLATE)  # raises TemplateSyntaxError on a bad edit
+        assert 'data-dtab="reasoning"' in _TEMPLATE
+        assert 'data-dtab="about"' in _TEMPLATE
+        assert "disrupt-news" in _TEMPLATE  # news column preserved
