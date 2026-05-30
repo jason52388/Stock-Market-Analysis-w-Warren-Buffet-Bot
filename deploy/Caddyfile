@@ -43,3 +43,27 @@ www.yalamanstockmarket.com {
     header /*.html Cache-Control "public, max-age=60"
     header /archive/* Cache-Control "public, max-age=3600"
 }
+
+# ─────────────────────────────────────────────────────────────
+#  YalamanBaby site (a separate project living on the same VPS)
+#
+#  The baby app runs in its own Docker container (yalaman-baby) that binds
+#  127.0.0.1:8088 on the host. This Caddy reaches it via the Docker bridge
+#  gateway (172.17.0.1:8088). Adding these blocks is the ONLY way HTTPS for
+#  yalamanbaby.com can work on this VPS, since warren-caddy is the only
+#  process holding ports 80/443.
+#
+#  Repo: https://github.com/jason52388/YalamanBaby
+#  DNS:  yalamanbaby.com AND www.yalamanbaby.com both -> 177.7.58.66
+# ─────────────────────────────────────────────────────────────
+
+# Bare domain -> redirect to www, preserving path/query.
+yalamanbaby.com {
+    redir https://www.yalamanbaby.com{uri} permanent
+}
+
+# www -> reverse proxy to the baby container's loopback port on the host.
+www.yalamanbaby.com {
+    encode gzip
+    reverse_proxy 172.17.0.1:8088
+}
