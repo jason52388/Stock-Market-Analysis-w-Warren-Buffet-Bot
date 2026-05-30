@@ -26,6 +26,11 @@ services:
       # Notion
       - NOTION_API_KEY=${NOTION_API_KEY}
       - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+      # Secondary data sources (tier-2 enrichment). EDGAR needs no key, just a
+      # declared contact; FMP/Finnhub stay inactive until their key is set.
+      - SEC_USER_AGENT=${SEC_USER_AGENT}
+      - FMP_API_KEY=${FMP_API_KEY}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
     volumes:
       # yfinance SQLite cache survives container rebuilds
       - warren_cache:/app/.cache
