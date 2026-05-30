@@ -218,14 +218,16 @@ def run(
     recommendations = build_recommendations(surfaced, hedge_views)
     click.echo(f"Built {len(recommendations)} blended recommendations")
 
-    # Build KPI rows for the Market KPIs tab (all screened tickers, errored ones excluded).
+    # Build KPI rows and Cockpit payloads from the same complete ticker set so
+    # anything visible in All Stocks can also be inspected in Cockpit.
     from .dashboard.render import build_cockpit_data, build_kpi_rows, render_dashboard
-    kpi_rows = build_kpi_rows([p for p in picks if not p.score.error])
+    complete_picks = [p for p in picks if not p.score.error]
+    kpi_rows = build_kpi_rows(complete_picks)
     click.echo(f"Built KPI table: {len(kpi_rows)} rows")
 
-    # Cockpit feed: every surfaced pick gets a fully-populated payload (KPIs,
-    # dim scores, thesis, news, recommendation/composite if present).
-    cockpit_data = build_cockpit_data(surfaced, recommendations, stock_news)
+    # Cockpit feed: every All Stocks row gets a fully-populated payload (KPIs,
+    # dim scores, thesis, news when fetched, recommendation/composite if present).
+    cockpit_data = build_cockpit_data(complete_picks, recommendations, stock_news)
     click.echo(f"Built cockpit data: {len(cockpit_data)} tickers")
 
     # Render dashboard.html (always)

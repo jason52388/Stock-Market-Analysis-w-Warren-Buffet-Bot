@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from jinja2 import Environment
 
 from warren_bot.dashboard.render import (
+    build_cockpit_data,
     _dq_badge,
     _exchange_label,
     _format_market_cap,
@@ -31,6 +32,39 @@ def _pick(ticker: str, summary: str, *, sector: str = "Technology"):
 def _metadata_pick(ticker: str, info: dict):
     score = SimpleNamespace(ticker=ticker)
     return SimpleNamespace(score=score, snap_info=info)
+
+
+def _cockpit_pick(ticker: str, total: float):
+    score = SimpleNamespace(
+        ticker=ticker,
+        name=f"{ticker} Co",
+        sector="Tech",
+        total=total,
+        effective_total=total,
+        error=None,
+        dimensions=[],
+        valuation=SimpleNamespace(
+            price=100.0,
+            margin_of_safety_pct=None,
+            intrinsic_value_per_share=None,
+            fcf_yield_pct=None,
+            shareholder_yield_pct=None,
+        ),
+        ratios=SimpleNamespace(
+            roe_pct_avg=None,
+            roic_pct_avg=None,
+            gross_margin_pct_avg=None,
+            net_margin_pct_avg=None,
+            debt_to_equity=None,
+            current_ratio=None,
+            interest_coverage=None,
+        ),
+    )
+    return SimpleNamespace(
+        score=score,
+        thesis=SimpleNamespace(summary=""),
+        snap_info={"regularMarketPrice": 100.0},
+    )
 
 
 class TestTickerMetadata:
@@ -84,6 +118,15 @@ class TestDataQualityBadge:
             dq=_DQ)
         rows = build_kpi_rows([p])
         assert rows[0]["dq"] == _DQ
+
+
+class TestCockpitData:
+    def test_includes_any_complete_pick_not_only_surface_scores(self):
+        picks = [_cockpit_pick("HIGH", 82.0), _cockpit_pick("LOW", 22.0)]
+
+        data = build_cockpit_data(picks)
+
+        assert [row["t"] for row in data] == ["HIGH", "LOW"]
 
 
 class TestAiDisruptionData:

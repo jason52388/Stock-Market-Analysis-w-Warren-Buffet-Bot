@@ -739,6 +739,12 @@ table.kpi td.ticker { font-family: ui-monospace, SFMono-Regular, Menlo, monospac
                       font-weight: 700; }
 table.kpi td.name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 table.kpi td.na { color: var(--na); }
+.ticker-cell { display: flex; align-items: center; gap: 8px; }
+.kpi-cockpit-link { border: 1px solid var(--line); background: #fff; color: var(--ink);
+                    border-radius: 6px; padding: 2px 7px; font-size: 11px;
+                    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+                    font-weight: 650; cursor: pointer; }
+.kpi-cockpit-link:hover { border-color: var(--accent); color: var(--accent); }
 .kpi-pager { display: flex; align-items: center; justify-content: space-between;
              padding: 10px 4px; font-size: 12.5px; color: var(--muted); }
 .kpi-pager button { background: #fff; border: 1px solid var(--line); border-radius: 6px;
@@ -811,6 +817,13 @@ table.kpi td.na { color: var(--na); }
                                          border-radius: 10px; overflow: hidden;
                                          background: #f8fafc; }
 .cockpit-ring .chart-pod .chart-mount iframe { border: 0; width: 100%; height: 100%; }
+.chart-ranges { display: flex; justify-content: center; gap: 4px; padding: 14px 4px 6px; }
+.chart-range-btn { border: 1px solid var(--line); background: #fff; color: var(--muted);
+                   border-radius: 999px; padding: 3px 8px; font-size: 10.5px;
+                   font-weight: 700; cursor: pointer; }
+.chart-range-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chart-range-btn:hover { border-color: var(--accent); color: var(--accent); }
+.chart-range-btn.active:hover { color: #fff; }
 .tradingview-widget-container { position: absolute; inset: 0; }
 .chart-fallback { position: absolute; inset: 0; display: grid; place-items: center;
                   text-align: center; padding: 24px; color: var(--muted);
@@ -1006,9 +1019,9 @@ table.signal-table .impact-cell { min-width: 120px; }
   <button class="tab-btn active" data-target="recs">Recommended</button>
   <button class="tab-btn" data-target="picks">Buffett picks</button>
   <button class="tab-btn" data-target="hedge">Hedge Funds</button>
-  {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
   {% if ai_disruption.positive or ai_disruption.negative %}<button class="tab-btn" data-target="disruption">AI Disruption</button>{% endif %}
   {% if kpi_rows %}<button class="tab-btn" data-target="kpis">All Stocks</button>{% endif %}
+  {% if cockpit_data %}<button class="tab-btn" data-target="cockpit">Cockpit</button>{% endif %}
   <button class="tab-btn" data-target="briefing">Weekly Briefing</button>
 </div>
 
@@ -1198,9 +1211,17 @@ composite = buffett_score<br>
     <!-- Center: chart pod -->
     <div class="chart-pod">
       <div class="ticker-badge" id="ckTickerBadge">—</div>
+      <div class="chart-ranges" aria-label="Chart range">
+        <button class="chart-range-btn" data-range="1D">1D</button>
+        <button class="chart-range-btn" data-range="1M">1M</button>
+        <button class="chart-range-btn" data-range="3M">3M</button>
+        <button class="chart-range-btn" data-range="12M">1Y</button>
+        <button class="chart-range-btn" data-range="5Y">5Y</button>
+        <button class="chart-range-btn" data-range="ALL">Max</button>
+      </div>
       <div class="chart-mount" id="ckChartMount"></div>
       <div class="chart-foot">
-        12-month price · TradingView ·
+        <span id="ckChartRangeLabel">1-year</span> price · TradingView ·
         <a id="ckYahooLink" target="_blank">Yahoo Finance ↗</a>
       </div>
     </div>
@@ -1903,12 +1924,25 @@ function dqBadge(dq) {
 <script>
 (function() {
   // Top-level tabs
+  function activateTab(target) {
+    const btn = document.querySelector('.tab-btn[data-target="' + target + '"]');
+    const tab = document.getElementById(target);
+    if (!btn || !tab) return false;
+    document.querySelectorAll('.tab-btn').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    tab.classList.add('active');
+    return true;
+  }
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escAttr(s) {
+    return escHtml(s).replace(/"/g, '&quot;');
+  }
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(x => x.classList.remove('active'));
-      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      document.getElementById(b.dataset.target).classList.add('active');
+      activateTab(b.dataset.target);
     });
   });
 
@@ -2145,6 +2179,7 @@ function dqBadge(dq) {
     const kpiPageInfo = document.getElementById('kpiPageInfo');
     const kpiPrev = document.getElementById('kpiPrev');
     const kpiNext = document.getElementById('kpiNext');
+    const hasCockpit = !!document.getElementById('ckData');
 
     function fmtMcap(v) {
       if (v == null) return '—';
@@ -2167,8 +2202,12 @@ function dqBadge(dq) {
       const html = slice.map(r => {
         const sc = r.sc ? r.sc.replace(/</g, '&lt;') : '';
         const nm = r.n ? r.n.replace(/</g, '&lt;') : '';
+        const cockpitBtn = hasCockpit
+          ? '<button class="kpi-cockpit-link" type="button" data-ticker="' + escAttr(r.t) + '">Cockpit</button>'
+          : '';
         return '<tr>' +
-          '<td class="ticker">' + r.t + ' ' + dqBadge(r.dq) + '</td>' +
+          '<td class="ticker"><div class="ticker-cell"><span>' + escHtml(r.t) + '</span>' +
+            cockpitBtn + dqBadge(r.dq) + '</div></td>' +
           '<td class="name" title="' + nm + '">' + nm + '</td>' +
           '<td>' + sc + '</td>' +
           '<td class="num">' + fmtPrice(r.px) + '</td>' +
@@ -2270,6 +2309,13 @@ function dqBadge(dq) {
 
     [kSector, kMcap, kPe, kDy].forEach(el => el.addEventListener('change', applyFilters));
     kSearch.addEventListener('input', applyFilters);
+    tbody.addEventListener('click', e => {
+      const btn = e.target.closest('.kpi-cockpit-link');
+      if (!btn) return;
+      if (activateTab('cockpit') && window.renderCockpitTicker) {
+        window.renderCockpitTicker(btn.dataset.ticker);
+      }
+    });
     kpiPrev.addEventListener('click', () => { if (page > 0) { page--; render(); } });
     kpiNext.addEventListener('click', () => {
       const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -2295,6 +2341,17 @@ function dqBadge(dq) {
     const chartMount = document.getElementById('ckChartMount');
     const yahooLink = document.getElementById('ckYahooLink');
     const cockpitSection = document.getElementById('cockpit');
+    const rangeLabel = document.getElementById('ckChartRangeLabel');
+    const rangeButtons = document.querySelectorAll('.chart-range-btn');
+    const RANGE_LABELS = {
+      '1D': '1-day',
+      '1M': '1-month',
+      '3M': '3-month',
+      '12M': '1-year',
+      '5Y': '5-year',
+      'ALL': 'max'
+    };
+    let chartRange = '12M';
 
     function esc(s) {
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2331,14 +2388,22 @@ function dqBadge(dq) {
         '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + Math.min(100, Math.max(0, sc)) + '%;"></div></div>' +
       '</div>';
     }
+    function syncRangeButtons() {
+      rangeButtons.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.range === chartRange);
+      });
+      if (rangeLabel) rangeLabel.textContent = RANGE_LABELS[chartRange] || chartRange;
+    }
+
     function tradingViewWidget(ticker) {
       // Rebuild the widget container from scratch — TradingView's embed script
       // mutates the node, so swapping innerHTML alone leaves stale state.
+      syncRangeButtons();
       chartMount.innerHTML =
         '<div class="chart-fallback">' +
           '<div>' +
             '<div class="fallback-title">' + esc(ticker) + ' chart</div>' +
-            '<div class="fallback-copy">Loading the 12-month TradingView chart. If the embed is blocked, use the Yahoo Finance link below.</div>' +
+            '<div class="fallback-copy">Loading the ' + esc(RANGE_LABELS[chartRange] || chartRange) + ' TradingView chart. If the embed is blocked, use the Yahoo Finance link below.</div>' +
           '</div>' +
         '</div>';
       const container = document.createElement('div');
@@ -2359,7 +2424,7 @@ function dqBadge(dq) {
         width: '100%',
         height: '100%',
         locale: 'en',
-        dateRange: '12M',
+        dateRange: chartRange,
         colorTheme: 'light',
         trendLineColor: 'rgba(26, 26, 26, 1)',
         underLineColor: 'rgba(26, 26, 26, 0.15)',
@@ -2485,6 +2550,20 @@ function dqBadge(dq) {
     }
 
     picker.addEventListener('change', () => render(picker.value));
+    rangeButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        chartRange = btn.dataset.range || chartRange;
+        syncRangeButtons();
+        if (cockpitVisible()) tradingViewWidget(picker.value);
+      });
+    });
+
+    window.renderCockpitTicker = function(ticker) {
+      const c = CK_BY[ticker];
+      if (!c) return;
+      picker.value = ticker;
+      render(ticker);
+    };
 
     // Build the chart when the Cockpit tab first becomes visible. render()
     // intentionally skips the chart while the section is hidden (a TradingView
@@ -2501,6 +2580,7 @@ function dqBadge(dq) {
 
     // Populate KPIs/thesis/news for the default ticker up front; the chart
     // builds lazily on first tab reveal (see above).
+    syncRangeButtons();
     if (CK_ROWS.length) render(CK_ROWS[0].t);
   }
 })();
