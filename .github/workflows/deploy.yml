@@ -9,6 +9,8 @@ name: Deploy to Hostinger VPS
 #   Connection:  VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_PATH
 #   App config:  SITE_HOSTNAME, TZ, GMAIL_FROM, GMAIL_TO, GMAIL_APP_PASSWORD,
 #                NOTION_API_KEY, NOTION_DATABASE_ID
+#   Sources:     SEC_USER_AGENT (optional; EDGAR works without it),
+#                FMP_API_KEY (optional), FINNHUB_API_KEY (optional)
 #
 # The app-config secrets are written to .env on the VPS on every deploy, so the
 # server never needs manual configuration — change a secret, push, done.
@@ -38,6 +40,13 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_SECRET }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          # Secondary data sources (tier-2 enrichment). EDGAR needs no key, only
+          # a declared contact (fair-access); if the secret is unset it falls back
+          # to a repo-identifying UA in code, so EDGAR works out of the box.
+          # FMP/Finnhub stay inactive in code until their key is non-empty.
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -47,7 +56,7 @@ jobs:
           command_timeout: 40m
           # Forward the app-config env vars into the remote shell so the heredoc
           # below can write them into .env.
-          envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID
+          envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID,SEC_USER_AGENT,FMP_API_KEY,FINNHUB_API_KEY
           script: |
             set -euo pipefail
 
@@ -78,6 +87,9 @@ jobs:
             GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD}
             NOTION_API_KEY=${NOTION_API_KEY}
             NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+            SEC_USER_AGENT=${SEC_USER_AGENT:-}
+            FMP_API_KEY=${FMP_API_KEY:-}
+            FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
             EOF
 
             docker compose up -d --build
