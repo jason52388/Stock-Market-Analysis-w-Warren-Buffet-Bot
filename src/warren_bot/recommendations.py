@@ -5,6 +5,12 @@ in dataroma's super-investor data — held by many, being added by many, or bein
 sold by many. The blended score nudges up for holdings + accumulation and down
 for distribution, then we tag each name with a tier so the reader can scan
 quickly: consensus, accumulating, caution, quant-only.
+
+Ranking is by *confluence* first. The barometer is a name that clears the
+Buffett screen AND carries a positive hedge-fund signal (consensus/accumulating);
+those always rank above Buffett-only names (quant-only), which in turn rank above
+names super-investors are net-selling (caution). The composite score only orders
+names *within* the same signal group — see ``_TIER_PRIORITY``.
 """
 from __future__ import annotations
 
@@ -52,6 +58,22 @@ def _pick_tier(rec: Recommendation) -> Tier:
     if has_holdings:
         return "consensus"
     return "quant-only"
+
+
+# Ranking priority groups — the reader's barometer is *confluence*. A name that
+# clears the Buffett screen AND carries a positive hedge-fund signal (held by
+# super-investors and/or being accumulated) outranks everything else, no matter
+# how high a competing score is. A Buffett-only name (no hedge-fund footprint)
+# always sits below any positive-signal name. Names super-investors are
+# net-*selling* rank last: an active exit is a worse sign than no signal at all.
+# These groups are the *primary* sort key; composite_score only breaks ties
+# within a group.
+_TIER_PRIORITY: dict[Tier, int] = {
+    "consensus": 2,     # Buffett + held by super-investors -> top barometer
+    "accumulating": 2,  # Buffett + being added last qtr    -> top barometer
+    "quant-only": 1,    # Buffett only, no hedge-fund signal -> lower priority
+    "caution": 0,       # hedge funds net-selling           -> ranked last
+}
 
 
 def build_recommendations(
@@ -141,5 +163,9 @@ def build_recommendations(
         rec.tier = _pick_tier(rec)
         recs.append(rec)
 
-    recs.sort(key=lambda r: r.composite_score, reverse=True)
+    # Primary key: signal group (confluence > Buffett-only > net-selling).
+    # Secondary key: composite_score within the group. reverse=True applies to
+    # both, so a higher priority group always wins regardless of composite, and
+    # composite only orders names that share a group.
+    recs.sort(key=lambda r: (_TIER_PRIORITY[r.tier], r.composite_score), reverse=True)
     return recs
