@@ -1,0 +1,88 @@
+name: Run status
+
+# One-click answer to "did the data actually refresh, and is a screen running
+# right now?" — without SSHing in yourself. Read-only: it inspects the bot
+# container and prints a single VERDICT line plus the evidence behind it.
+#
+# It understands BOTH refresh paths:
+#   * Manual "Run bot now" — writes out/warren-run.log and holds
+#     /tmp/warren-run.lock while a screen is in flight.
+#   * Weekly cron (Sun 18:00, in-container) — no lock/log; its completion shows
+#     up as a fresh out/dashboard.html and a new out/archive/<date>.html.
+#
+# Run it from the Actions tab any time. Typical readings:
+#   🟡 RUNNING   — a screen is in flight (lock present); check back later.
+#   ✅ COMPLETED — last manual run finished cleanly.
+#   ⚠️ STALLED   — a manual run started but never finished and no lock is held
+#                  (likely crashed) — see the log tail.
+#   ℹ️ NO MANUAL LOG — only the cron path has run (or nothing has) — judge by the
+#                  dashboard/archive timestamps below.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Report run status over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd "${{ secrets.VPS_PATH }}"
+            BOT="docker compose exec -T bot"
+
+            # If exec fails, the container isn't up — nothing else is meaningful.
+            if ! $BOT true 2>/dev/null; then
+              echo "VERDICT: ❌ bot container is not reachable (docker compose exec failed)."
+              echo ""
+              echo "===== container status ====="
+              docker compose ps
+              exit 0
+            fi
+
+            LOG=out/warren-run.log
+
+            # Lock present => a screen is in flight (manual-run path).
+            if $BOT test -f /tmp/warren-run.lock 2>/dev/null; then INFLIGHT=1; else INFLIGHT=0; fi
+
+            # Last start/finish markers and their line positions (later line wins).
+            STARTED=$($BOT sh -c "grep 'run started'  $LOG 2>/dev/null | tail -1" || true)
+            FINISHED=$($BOT sh -c "grep 'run finished' $LOG 2>/dev/null | tail -1" || true)
+            SLINE=$($BOT sh -c "grep -n 'run started'  $LOG 2>/dev/null | tail -1 | cut -d: -f1" || true)
+            FLINE=$($BOT sh -c "grep -n 'run finished' $LOG 2>/dev/null | tail -1 | cut -d: -f1" || true)
+
+            # Freshness signals that also cover the cron path.
+            DASH_TS=$($BOT sh -c "stat -c '%y' out/dashboard.html 2>/dev/null" || true)
+            ARCHIVE=$($BOT sh -c "ls -1t out/archive/*.html 2>/dev/null | head -1" || true)
+
+            echo "============================================================"
+            if [ "$INFLIGHT" = "1" ]; then
+              echo "VERDICT: 🟡 RUNNING — a screen is in flight right now."
+              echo "  ${STARTED:-(started marker not written yet)}"
+            elif [ -n "$FLINE" ] && { [ -z "$SLINE" ] || [ "$FLINE" -ge "$SLINE" ]; }; then
+              echo "VERDICT: ✅ COMPLETED — last manual run finished cleanly."
+              echo "  ${FINISHED}"
+            elif [ -n "$SLINE" ]; then
+              echo "VERDICT: ⚠️ STALLED — last manual run started but never finished and"
+              echo "         no lock is held (likely crashed). See the log tail below."
+              echo "  ${STARTED}"
+            else
+              echo "VERDICT: ℹ️ NO MANUAL LOG — only the weekly cron has run (or nothing has)."
+              echo "         Judge freshness by the timestamps below."
+            fi
+            echo "  dashboard.html last written: ${DASH_TS:-<missing>}"
+            echo "  latest archive snapshot:     ${ARCHIVE:-<none>}"
+            echo "============================================================"
+
+            echo ""
+            echo "===== last 25 lines of $LOG ====="
+            $BOT sh -c "tail -n 25 $LOG 2>/dev/null" || echo "(no warren-run.log yet — no manual run has been kicked off)"
+
+            echo ""
+            echo "===== container status ====="
+            docker compose ps

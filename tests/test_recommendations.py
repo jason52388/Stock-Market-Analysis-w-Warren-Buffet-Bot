@@ -137,3 +137,45 @@ class TestBuildRecommendations:
         picks = [_pick("LOW", 60), _pick("MID", 70), _pick("HIGH", 80)]
         recs = build_recommendations(picks, {})
         assert [r.pick.score.ticker for r in recs] == ["HIGH", "MID", "LOW"]
+
+
+class TestConfluencePriority:
+    """The barometer: a positive hedge-fund signal outranks a Buffett-only name
+    no matter how high the Buffett-only score, and net-selling names rank last.
+    """
+
+    def test_confluence_outranks_higher_scoring_buffett_only(self):
+        # CONF scores LOWER on Buffett (75) but is held by super-investors;
+        # SOLO scores HIGHER (95) but no super-investor touches it.
+        picks = [_pick("SOLO", 95), _pick("CONF", 75)]
+        hedge_views = {"holdings": _view("holdings", [_row("CONF", rank=1)])}
+        recs = build_recommendations(picks, hedge_views)
+        # Confluence wins despite the lower raw score.
+        assert [r.pick.score.ticker for r in recs] == ["CONF", "SOLO"]
+        assert recs[0].tier == "consensus"
+        assert recs[1].tier == "quant-only"
+
+    def test_buffett_only_outranks_net_selling(self):
+        # SELL is held widely AND high-scoring, but net-sold → ranks below a
+        # plain Buffett-only name.
+        picks = [_pick("SOLO", 70), _pick("SELL", 95)]
+        hedge_views = {
+            "holdings": _view("holdings", [_row("SELL", rank=1, metric_value=20)]),
+            "sells": _view("sells", [_row("SELL", rank=1, metric_value=10)]),
+        }
+        recs = build_recommendations(picks, hedge_views)
+        assert [r.pick.score.ticker for r in recs] == ["SOLO", "SELL"]
+        assert recs[0].tier == "quant-only"
+        assert recs[1].tier == "caution"
+
+    def test_full_ordering_confluence_then_solo_then_caution(self):
+        picks = [_pick("SOLO", 90), _pick("CONF", 65), _pick("SELL", 88)]
+        hedge_views = {
+            "holdings": _view("holdings", [
+                _row("CONF", rank=1, metric_value=15),
+                _row("SELL", rank=2, metric_value=12),
+            ]),
+            "sells": _view("sells", [_row("SELL", rank=1, metric_value=10)]),
+        }
+        recs = build_recommendations(picks, hedge_views)
+        assert [r.pick.score.ticker for r in recs] == ["CONF", "SOLO", "SELL"]

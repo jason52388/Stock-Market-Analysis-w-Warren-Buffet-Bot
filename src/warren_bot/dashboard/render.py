@@ -290,6 +290,119 @@ def _keyword_hits(text: str, keywords: Iterable[str]) -> list[str]:
     return hits
 
 
+# Per-signal narrative fragments so each card explains *this* company's AI
+# exposure instead of repeating one boilerplate sentence. Keys are the same
+# tokens matched in POSITIVE_AI_TERMS / NEGATIVE_AI_TERMS (plus the synthesized
+# sector tags); each value completes the sentence "<Company> ...".
+_POSITIVE_ANGLES: dict[str, str] = {
+    "semiconductor": "sells the silicon that AI training and inference run on",
+    "gpu": "supplies the accelerators AI compute demand is bottlenecked on",
+    "accelerator": "supplies the accelerators AI compute demand is bottlenecked on",
+    "chip": "makes chips underpinning the AI hardware buildout",
+    "data center": "rides the data-center capex wave funding AI capacity",
+    "cloud": "rents the cloud capacity enterprises use to deploy AI",
+    "cybersecurity": "defends an attack surface that AI is widening",
+    "infrastructure": "owns infrastructure that AI workloads scale on top of",
+    "platform": "can fan AI features across an existing platform and user base",
+    "software": "can attach AI capabilities to software it already sells",
+    "automation": "sells automation that AI makes materially more capable",
+    "robotics": "pairs AI with robotics to automate physical-world work",
+    "analytics": "turns AI into faster, deeper analytics for its customers",
+    "database": "stores and serves the data AI models train and run on",
+    "networking": "moves the traffic AI clusters generate and consume",
+    "consulting": "gets paid to help enterprises actually implement AI",
+    "drug discovery": "uses AI to compress drug-discovery timelines",
+    "diagnostic": "applies AI to sharpen diagnostics",
+    "industrial automation": "sells industrial automation that AI is upgrading",
+    "technology sector": "sits in a technology segment levered to AI demand",
+}
+
+_NEGATIVE_ANGLES: dict[str, str] = {
+    "call center": "runs call-center work AI agents can increasingly handle",
+    "customer support": "sells support labor that AI chat is substituting for",
+    "staffing": "places workers into roles AI may thin out",
+    "recruiting": "bills for recruiting tasks AI tooling can automate",
+    "outsourcing": "bills for process work AI can automate end to end",
+    "business process": "runs business-process work exposed to AI automation",
+    "back office": "handles back-office tasks AI can absorb",
+    "data entry": "depends on data-entry work AI eliminates",
+    "content": "produces content that generative models can now mass-produce",
+    "advertising": "sells creative and ad work AI tools are commoditizing",
+    "agency": "bills agency hours that AI productivity tools compress",
+    "publisher": "monetizes content that AI summarization disintermediates",
+    "education": "sells education and training that AI tutors can undercut",
+    "training": "sells training content AI can generate on demand",
+    "legal": "bills legal work that AI drafting and review can speed up",
+    "tax preparation": "sells tax-prep labor that AI software can replace",
+    "brokerage": "earns fees on brokerage tasks AI can automate",
+    "claims processing": "processes claims that AI can adjudicate faster",
+    "translation": "sells translation that AI now does near-instantly",
+    "documentation": "produces documentation that AI can largely generate",
+    "content or ad workflow exposure": "leans on content and ad workflows AI is reshaping",
+}
+
+# Tailored "what to watch" lines keyed by the strongest positive signal.
+_POSITIVE_WATCH: dict[str, str] = {
+    "semiconductor": "Watch order backlog, how concentrated revenue is among the handful of large AI spenders, and whether this capex cycle is pulling demand forward into an eventual air-pocket.",
+    "gpu": "Watch order backlog, customer concentration among the hyperscalers, and whether supply catching up compresses today's pricing.",
+    "accelerator": "Watch order backlog, customer concentration among the hyperscalers, and whether supply catching up compresses today's pricing.",
+    "chip": "Watch utilization, inventory in the channel, and whether AI demand is incremental or cannibalizing other chip end-markets.",
+    "data center": "Watch capex intensity against free cash flow, power and siting constraints, and whether AI-driven utilization holds once the buildout normalizes.",
+    "cloud": "Watch capex intensity against free cash flow, pricing as hyperscalers compete, and whether AI usage converts into durable margin rather than just higher compute bills.",
+    "infrastructure": "Watch capex intensity against free cash flow and whether AI-driven utilization holds up once the buildout normalizes.",
+    "software": "Watch whether AI features actually lift pricing and retention or just raise compute costs, and how fast cheap open models commoditize them.",
+    "platform": "Watch whether AI features lift engagement and pricing, and the compute cost of serving them at scale.",
+    "cybersecurity": "Watch net revenue retention, whether AI-driven threats expand security budgets, and pricing pressure from AI-native entrants.",
+}
+
+
+def _ai_narrative(
+    impact: str, name: str, reasons: list[str], hits: list[str]
+) -> tuple[str, str]:
+    """Build a per-company reasoning + what-to-watch from its own matched signals.
+
+    Deterministic (no model call): it stitches the company name to the specific
+    angle phrases for the signals that actually fired, so two cards in the same
+    bucket read differently. Falls back to a generic sentence only when none of
+    the matched tokens have a mapped phrase.
+    """
+    angles = _POSITIVE_ANGLES if impact == "Positive" else _NEGATIVE_ANGLES
+    # Preserve surfacing order: the displayed reason tags first, then extra hits.
+    ordered = list(dict.fromkeys([*reasons, *hits]))
+    matched = [angles[k] for k in ordered if k in angles]
+
+    if matched:
+        insight = f"{name} {matched[0]}"
+        if len(matched) > 1:
+            insight += f", and {matched[1]}"
+        insight += "."
+    elif impact == "Positive":
+        insight = (
+            f"{name} screens as a likely AI beneficiary: AI raises demand for its "
+            "tools, infrastructure, automation, or technical services."
+        )
+    else:
+        insight = (
+            f"{name} screens as exposed: AI can automate parts of its workflow, "
+            "compress pricing, or lower barriers for competitors."
+        )
+
+    if impact == "Positive":
+        watch = next((_POSITIVE_WATCH[k] for k in ordered if k in _POSITIVE_WATCH), None)
+        if not watch:
+            watch = (
+                "Watch capex intensity, how quickly the advantage commoditizes, and "
+                "whether AI demand converts into durable margins rather than one-off revenue."
+            )
+    else:
+        at_risk = ordered[0] if ordered else "the exposed workflow"
+        watch = (
+            f"Watch pricing power and the share of revenue tied to {at_risk}, customer "
+            "churn, and whether management is deploying AI defensively or merely absorbing the hit."
+        )
+    return insight, watch
+
+
 def build_ai_disruption_data(
     picks: list[Pick],
     stock_news: dict[str, list[NewsItem]] | None = None,
@@ -368,6 +481,7 @@ def build_ai_disruption_data(
             "price": _round(info.get("regularMarketPrice") or s.valuation.price, 2),
             "mos": _round(s.valuation.margin_of_safety_pct, 0),
             "thesis": thesis,
+            "description": desc[:600],
             "aiSignals": list(dict.fromkeys(ai_hits)),
             "positiveSignals": list(dict.fromkeys(pos_hits)),
             "negativeSignals": list(dict.fromkeys(neg_hits)),
@@ -381,30 +495,26 @@ def build_ai_disruption_data(
         }
 
         if pos_score >= max(3, neg_score + 1):
-            reasons = list(dict.fromkeys(pos_hits[:4] + ai_hits[:3]))
+            reasons = list(dict.fromkeys(pos_hits[:4] + ai_hits[:3])) or ["AI operating leverage"]
+            insight, watch = _ai_narrative("Positive", s.name, reasons, pos_hits + ai_hits)
             positive.append({
                 **base,
                 "impact": "Positive",
                 "scoreLabel": f"{pos_score} signals",
-                "reasons": reasons or ["AI operating leverage"],
-                "insight": (
-                    "Likely beneficiary because AI raises demand for its tools, "
-                    "infrastructure, automation, or technical services."
-                ),
-                "watch": "Watch for capex intensity, commoditization, and whether AI demand converts into durable margins.",
+                "reasons": reasons,
+                "insight": insight,
+                "watch": watch,
             })
         elif neg_score >= 3:
-            reasons = list(dict.fromkeys(neg_hits[:4] + ai_hits[:3]))
+            reasons = list(dict.fromkeys(neg_hits[:4] + ai_hits[:3])) or ["AI substitution risk"]
+            insight, watch = _ai_narrative("Negative", s.name, reasons, neg_hits + ai_hits)
             negative.append({
                 **base,
                 "impact": "Negative",
                 "scoreLabel": f"{neg_score} signals",
-                "reasons": reasons or ["AI substitution risk"],
-                "insight": (
-                    "Potential pressure point because AI can automate parts of the "
-                    "workflow, compress pricing, or lower barriers for competitors."
-                ),
-                "watch": "Watch pricing power, labor intensity, customer churn, and evidence that the company is using AI defensively.",
+                "reasons": reasons,
+                "insight": insight,
+                "watch": watch,
             })
 
     positive.sort(key=lambda x: (len(x["reasons"]), x["score"] or 0), reverse=True)
@@ -908,6 +1018,17 @@ table.kpi td.na { color: var(--na); }
 .disrupt-section-title { color: var(--muted); font-size: 11px; text-transform: uppercase;
                          letter-spacing: .04em; font-weight: 800; margin-bottom: 5px; }
 .disrupt-copy { color: #334155; font-size: 12.5px; line-height: 1.5; }
+/* Per-card sub-tabs (Reasoning / What to watch / Signals / Company) */
+.dt-tab-bar { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 9px;
+              border-bottom: 1px solid var(--line); }
+.dt-tab-btn { background: none; border: none; padding: 6px 10px; font-size: 11.5px;
+              font-weight: 700; color: var(--muted); cursor: pointer;
+              border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.dt-tab-btn:hover { color: var(--ink); }
+.dt-tab-btn.active { color: var(--ink); border-bottom-color: var(--focus); }
+.dt-pane { display: none; }
+.dt-pane.active { display: block; }
+.dt-pane .disrupt-copy + .reason-tags { margin-top: 8px; }
 .reason-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
 .reason-tags .tag { background: #f8fafc; border: 1px solid var(--line); }
 .disrupt-news .news-item { margin: 0; padding: 7px 0; border-bottom: 1px solid var(--line); }
@@ -1103,7 +1224,7 @@ composite = buffett_score<br>
   <div class="section-head">
     Recommended — <span class="count" id="recCount">{{ recommendations|length }}</span>
     <span style="color: var(--muted); font-weight: 400; font-size: 12px; text-transform: none;">
-      · ranked by composite of Buffett score + hedge fund signal
+      · hedge-fund + Buffett names rank first, then Buffett-only, then net-selling — composite breaks ties within each group
     </span>
   </div>
 
@@ -1523,15 +1644,37 @@ composite = buffett_score<br>
 
         <div class="disrupt-grid">
           <div>
-            <div class="disrupt-section-title">Reasoning</div>
-            <div class="disrupt-copy">{{ item.insight }}</div>
-            <div class="reason-tags">
-              {% for r in item.reasons %}
-              <span class="tag">{{ r }}</span>
-              {% endfor %}
+            <div class="dt-tab-bar">
+              <button class="dt-tab-btn active" data-dtab="reasoning">Reasoning</button>
+              <button class="dt-tab-btn" data-dtab="watch">What to watch</button>
+              <button class="dt-tab-btn" data-dtab="signals">Signals</button>
+              <button class="dt-tab-btn" data-dtab="about">Company</button>
             </div>
-            <div class="disrupt-section-title">What to watch</div>
-            <div class="disrupt-copy">{{ item.watch }}</div>
+            <div class="dt-pane active" data-dtab="reasoning">
+              <div class="disrupt-copy">{{ item.insight }}</div>
+            </div>
+            <div class="dt-pane" data-dtab="watch">
+              <div class="disrupt-copy">{{ item.watch }}</div>
+            </div>
+            <div class="dt-pane" data-dtab="signals">
+              {% if item.reasons %}
+              <div class="disrupt-copy">{{ item.scoreLabel }} matched on this run's AI screen:</div>
+              <div class="reason-tags">
+                {% for r in item.reasons %}
+                <span class="tag">{{ r }}</span>
+                {% endfor %}
+              </div>
+              {% else %}
+              <div class="no-content">No discrete signals recorded.</div>
+              {% endif %}
+            </div>
+            <div class="dt-pane" data-dtab="about">
+              {% if item.description %}
+              <div class="disrupt-copy">{{ item.description }}</div>
+              {% else %}
+              <div class="no-content">No business description available.</div>
+              {% endif %}
+            </div>
           </div>
           <div class="disrupt-news">
             <div class="disrupt-section-title">Recent news and evidence</div>
@@ -1973,6 +2116,20 @@ function dqBadge(dq) {
     btn.classList.add('active');
     const content = card.querySelector('.card-tab-content[data-tab="' + target + '"]');
     if (content) content.classList.add('active');
+  });
+
+  // Per-card AI-disruption sub-tabs (Reasoning / What to watch / Signals / Company)
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.dt-tab-btn');
+    if (!btn) return;
+    const card = btn.closest('.disrupt-card');
+    if (!card) return;
+    const target = btn.dataset.dtab;
+    card.querySelectorAll('.dt-tab-btn').forEach(b => b.classList.remove('active'));
+    card.querySelectorAll('.dt-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const pane = card.querySelector('.dt-pane[data-dtab="' + target + '"]');
+    if (pane) pane.classList.add('active');
   });
 
   // Hedge funds sub-tabs (Holdings / Buys / Sells)
