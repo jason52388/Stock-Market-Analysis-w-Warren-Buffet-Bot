@@ -58,9 +58,11 @@ data:
   yf_batch_size: 25
   yf_batch_sleep_sec: 2
   # Pre-filter: skip stocks below this market cap before pulling statements.
-  # Buffett rarely touches micro-caps; this dramatically cuts runtime on the
-  # all-US universe. Set to 0 to disable.
-  min_market_cap_usd: 300000000   # $300M
+  # Buffett rarely touches micro/small-caps, so a $1B floor excludes names he'd
+  # almost never buy while sharply shrinking the deep-fetch set — fewer tickers
+  # survive to the expensive statement pulls, so cold runs finish much faster.
+  # Set to 0 to disable; lower (e.g. 300000000 = $300M) to widen the net.
+  min_market_cap_usd: 1000000000  # $1B
 
 # Secondary data sources (tier-2 enrichment). The free yfinance sweep screens the
 # whole universe; these are consulted only on the finalists + completeness-gate
