@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from jinja2 import Environment
+
 from warren_bot.dashboard.render import (
+    _dq_badge,
     _exchange_label,
     _format_market_cap,
     _listing_badges,
     build_ai_disruption_data,
+    build_kpi_rows,
 )
 
 
@@ -44,6 +48,42 @@ class TestTickerMetadata:
         badges = _listing_badges(pick)
         assert "S&P 500" in badges
         assert "Watchlist" in badges
+
+
+_DQ = {"level": "warn", "label": "Check data",
+       "sources": ["edgar", "yfinance"], "flags": ["market_cap: ..."],
+       "detail": ["Gap-filled: cashflow ← edgar", "market_cap: sources disagree 30.0%"]}
+
+
+class TestDataQualityBadge:
+    def test_badge_global_renders_in_jinja(self):
+        # Exact mechanism both _TEMPLATE (AI cards) and _PICK_CARD (pick cards)
+        # use: dq_badge registered as an env global.
+        env = Environment(autoescape=True)
+        env.globals["dq_badge"] = _dq_badge
+        t = env.from_string("{{ dq_badge(dq) }}")
+        out = t.render(dq=_DQ)
+        assert 'class="dq-badge dq-warn"' in out
+        assert "Check data" in out
+        assert "Gap-filled: cashflow" in out  # detail surfaced in tooltip
+
+    def test_badge_empty_for_unenriched_pick(self):
+        assert str(_dq_badge(None)) == ""
+
+    def test_badge_escapes_detail(self):
+        bad = {"level": "info", "label": "x", "detail": ['<script>"&']}
+        assert "<script>" not in str(_dq_badge(bad))
+
+    def test_kpi_rows_carry_dq(self):
+        p = SimpleNamespace(
+            score=SimpleNamespace(
+                ticker="AAPL", name="Apple", sector="Tech", total=80.0,
+                valuation=SimpleNamespace(fcf_yield_pct=5.0, price=100.0),
+                ratios=SimpleNamespace(roe_pct_avg=30.0, debt_to_equity=1.2)),
+            snap_info={"regularMarketPrice": 100.0},
+            dq=_DQ)
+        rows = build_kpi_rows([p])
+        assert rows[0]["dq"] == _DQ
 
 
 class TestAiDisruptionData:

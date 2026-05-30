@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .analysis.scorer import TickerScore, score_ticker
@@ -20,6 +20,10 @@ class Pick:
     score: TickerScore
     thesis: Thesis
     snap_info: dict
+    # Multi-source enrichment (empty unless the enrich stage ran on this pick).
+    provenance: dict = field(default_factory=dict)
+    flags: list[str] = field(default_factory=list)
+    dq: dict | None = None      # data-quality badge summary (data.merge.summarize_quality)
 
 
 def load_universe(settings: dict) -> list[str]:
@@ -50,12 +54,21 @@ def build_cache(settings: dict) -> Cache:
 
 def _build_fetcher(settings: dict, cache: Cache | None = None) -> Fetcher:
     data_cfg = settings["data"]
+    thr = settings.get("throttle", {})
     cache = cache or build_cache(settings)
+    stmt_ttl_h = data_cfg.get("statement_ttl_hours")
+    price_ttl_h = data_cfg.get("price_ttl_hours")
     return Fetcher(
         cache,
         batch_size=int(data_cfg["yf_batch_size"]),
         batch_sleep_sec=float(data_cfg["yf_batch_sleep_sec"]),
         min_market_cap=float(data_cfg.get("min_market_cap_usd", 0) or 0),
+        statement_ttl_seconds=(int(stmt_ttl_h) * 3600 if stmt_ttl_h is not None else None),
+        price_ttl_seconds=(int(price_ttl_h) * 3600 if price_ttl_h is not None else None),
+        requests_per_sec=float(thr.get("requests_per_sec", 0) or 0),
+        blank_retries=int(thr.get("blank_retries", 0) or 0),
+        blank_retry_backoff_sec=float(thr.get("blank_retry_backoff_sec", 1.5)),
+        yf_internal_retries=int(thr.get("yf_internal_retries", 0) or 0),
     )
 
 
@@ -90,18 +103,21 @@ def run_universe(
     limit: int | None = None,
     force_refresh: bool = False,
     sample: bool = False,
-    max_workers: int = 6,
+    max_workers: int | None = None,
     cache: Cache | None = None,
 ) -> list[Pick]:
     """Score the configured universe of tickers.
 
-    Tickers are fetched/scored in parallel with a bounded pool — yfinance
-    handles ~6 concurrent connections well. Cache hits return instantly so
-    warm runs scale near-linearly with worker count.
+    Tickers are fetched/scored in parallel with a bounded pool. The pool size
+    and a shared rate limiter (see `throttle` in settings) together keep the
+    aggregate Yahoo request rate low enough to avoid 429s / blank responses.
+    Cache hits return instantly, so warm runs are fast regardless of the limit.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     settings = settings or load_settings()
+    if max_workers is None:
+        max_workers = int(settings.get("throttle", {}).get("max_workers", 3) or 3)
     tickers = load_universe(settings)
     if limit:
         if sample:
@@ -128,8 +144,73 @@ def run_universe(
             if completed % 100 == 0:
                 log.info("Progress: %d/%d", completed, len(tickers))
 
+    # Tier-2 enrichment (validate finalists + rescue gate-failures) needs the
+    # ranking to pick finalists, so sort first, enrich, then re-sort by the
+    # post-demotion effective score.
     picks.sort(key=lambda p: p.score.total, reverse=True)
+    picks = enrich_picks(picks, settings, fetcher=fetcher)
+    picks.sort(key=lambda p: p.score.effective_total, reverse=True)
     return picks
+
+
+def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list[Pick]:
+    """Tier-2: cross-source validate/gap-fill the picks that matter.
+
+    Runs the secondary adapters (EDGAR/FMP/Finnhub) only on the top-N finalists
+    plus completeness-gate failures, then re-scores each merged snapshot. Returns
+    a new picks list with enriched picks substituted in place; on any config/key
+    gap it is a no-op, so the universe sweep behaves exactly as before.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .data.enrich import build_adapters, enrich_snapshot, _penalty_for
+    from .data.merge import summarize_quality
+
+    merge_cfg = (settings.get("sources", {}) or {}).get("merge", {}) or {}
+    if not merge_cfg.get("enabled", True):
+        return picks
+    adapters = build_adapters(settings, fetcher.cache)
+    if not adapters:
+        return picks
+
+    divergence = float(merge_cfg.get("divergence_pct_flag", 5.0))
+    field_div = {k: float(v) for k, v in
+                 (merge_cfg.get("divergence_pct_by_field", {}) or {}).items()}
+    top_n = int(merge_cfg.get("enrich_top_n", 50))
+    scorable = [p for p in picks if not p.score.error]
+    targets: dict[str, Pick] = {p.score.ticker: p for p in scorable[:top_n]}
+    if merge_cfg.get("rescue_gate_failures", True):
+        rescue_limit = int(merge_cfg.get("rescue_limit", 150))
+        rescued = [p for p in picks if p.score.error
+                   and str(p.score.error).startswith("incomplete data")]
+        for p in rescued[:rescue_limit]:
+            targets.setdefault(p.score.ticker, p)
+    if not targets:
+        return picks
+    log.info("Enriching %d picks via %s", len(targets),
+             ", ".join(a.name for a in adapters))
+
+    def _enrich_one(ticker: str) -> tuple[str, Pick]:
+        snap = fetcher.get(ticker)  # warm cache hit
+        merged, flags = enrich_snapshot(snap, adapters, divergence_pct=divergence,
+                                        field_divergence=field_div)
+        ts = score_ticker(merged, settings)
+        ts.corroboration_penalty = _penalty_for(flags)
+        thesis = generate_thesis(ts, merged.info)
+        return ticker, Pick(score=ts, thesis=thesis, snap_info=merged.info,
+                            provenance=merged.provenance, flags=merged.flags,
+                            dq=summarize_quality(merged.provenance, flags))
+
+    updated: dict[str, Pick] = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futs = {pool.submit(_enrich_one, t): t for t in targets}
+        for fut in as_completed(futs):
+            try:
+                t, newp = fut.result()
+                updated[t] = newp
+            except Exception as e:
+                log.debug("enrich failed for %s: %s", futs[fut], e)
+    return [updated.get(p.score.ticker, p) for p in picks]
 
 
 def split_picks(
@@ -159,7 +240,9 @@ def split_picks(
         cov = getattr(p.score, "data_coverage", 1.0)
         if cov < surface_min:
             continue  # too little data to make any claim
-        s = p.score.total
+        # effective_total applies the cross-source corroboration penalty, so an
+        # uncorroborated finalist can drop a tier (annotate + demote policy).
+        s = getattr(p.score, "effective_total", p.score.total)
         if s >= strong_thr and cov >= strong_min:
             strong.append(p)
         elif s >= angle_thr and cov >= angle_min:
@@ -205,15 +288,17 @@ def write_csv(picks: list[Pick], out_path: Path) -> None:
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow([
-            "ticker", "name", "sector", "total",
+            "ticker", "name", "sector", "total", "effective_total",
             "moat", "strength", "consistency", "valuation", "cap_alloc",
-            "data_coverage", "price", "fcf_yield_pct", "margin_of_safety_pct", "error",
+            "data_coverage", "price", "fcf_yield_pct", "margin_of_safety_pct",
+            "provenance", "data_flags", "error",
         ])
         for p in picks:
             s = p.score
             dim = {d.name: d.score for d in s.dimensions}
             w.writerow([
                 s.ticker, s.name, s.sector, s.total,
+                getattr(s, "effective_total", s.total),
                 round(dim.get("Moat & Profitability", 0), 1),
                 round(dim.get("Financial Strength", 0), 1),
                 round(dim.get("Consistency", 0), 1),
@@ -223,5 +308,7 @@ def write_csv(picks: list[Pick], out_path: Path) -> None:
                 s.valuation.price,
                 s.valuation.fcf_yield_pct,
                 s.valuation.margin_of_safety_pct,
+                ";".join(f"{k}={v}" for k, v in (getattr(p, "provenance", {}) or {}).items()),
+                " | ".join(getattr(p, "flags", []) or []),
                 s.error or "",
             ])

@@ -43,25 +43,59 @@ def _print_pick(p: Pick) -> None:
     click.echo(p.thesis.as_markdown())
 
 
+def _exclusion_summary(picks: list[Pick]) -> "dict[str, int]":
+    """Count excluded (errored) picks by reason so a run reports WHY names were
+    dropped — chiefly so a high 'incomplete data' count flags Yahoo throttling."""
+    from collections import Counter
+    cats: Counter[str] = Counter()
+    for p in picks:
+        e = p.score.error or ""
+        if not e:
+            continue
+        if e.startswith("incomplete data"):
+            cats["incomplete data"] += 1
+        elif "below min market cap" in e and "mcap=None" in e:
+            cats["missing market cap (throttled)"] += 1
+        elif "below min market cap" in e:
+            cats["below min market cap"] += 1
+        else:
+            cats["other error"] += 1
+    return dict(cats)
+
+
 def _data_quality_warning(picks: list[Pick]) -> str | None:
     if not picks:
         return None
     errored = [p for p in picks if p.score.error]
+    clean = len(picks) - len(errored)
     mcap_none = [
         p for p in errored
         if "below min market cap" in (p.score.error or "")
         and "mcap=None" in (p.score.error or "")
     ]
-    if len(mcap_none) < max(25, int(len(picks) * 0.10)):
-        return None
-    clean = len(picks) - len(errored)
-    return (
-        "WARNING: This run has "
-        f"{len(mcap_none)}/{len(picks)} tickers with missing Yahoo market cap "
-        f"(clean scores: {clean}). The picks may be alphabet-biased/incomplete; "
-        "rerun after the transient cache expires or use --force-refresh before "
-        "trusting the dashboard."
-    )
+    incomplete = [p for p in errored if (p.score.error or "").startswith("incomplete data")]
+
+    floor = max(25, int(len(picks) * 0.10))
+    if len(mcap_none) >= floor:
+        return (
+            "WARNING: This run has "
+            f"{len(mcap_none)}/{len(picks)} tickers with missing Yahoo market cap "
+            f"(clean scores: {clean}). The picks may be alphabet-biased/incomplete; "
+            "rerun after the transient cache expires or use --force-refresh before "
+            "trusting the dashboard."
+        )
+    # Incomplete-statement exclusions are expected at a low rate, but a high rate
+    # means Yahoo throttled many per-statement pulls this run — the surfaced set
+    # is then a thin, possibly biased slice. Flag it so the run isn't trusted.
+    if len(incomplete) >= floor:
+        return (
+            "WARNING: This run dropped "
+            f"{len(incomplete)}/{len(picks)} tickers for incomplete statements "
+            f"(complete scores: {clean}). That's likely heavy Yahoo throttling, "
+            "so the surfaced picks are a thin slice — re-run (incomplete fetches "
+            "retry automatically next run) or use --force-refresh before trusting it."
+        )
+    return None
 
 
 @click.group()
@@ -126,8 +160,12 @@ def run(
     )
     strong, angles, partial = split_picks(picks, settings)
     surfaced = strong + angles + partial
-    click.echo(f"Scored {len(picks)} tickers: {len(strong)} strong, "
-               f"{len(angles)} angles, {len(partial)} partial")
+    complete = sum(1 for p in picks if not p.score.error)
+    click.echo(f"Scored {complete}/{len(picks)} tickers with complete data: "
+               f"{len(strong)} strong, {len(angles)} angles, {len(partial)} partial")
+    if excl := _exclusion_summary(picks):
+        click.echo("Excluded: " + ", ".join(
+            f"{n} {reason}" for reason, n in sorted(excl.items(), key=lambda kv: -kv[1])))
     if warning := _data_quality_warning(picks):
         click.echo(click.style(warning, fg="yellow"), err=True)
 

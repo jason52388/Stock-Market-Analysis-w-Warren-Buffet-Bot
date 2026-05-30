@@ -6,40 +6,35 @@ from dataclasses import dataclass
 import math
 
 from ..data.fetcher import TickerSnapshot
+from ..data.schema import ALIASES
 from .statement_utils import aligned, avg, frame, row
 
-# yfinance line-item aliases. First match wins.
-_REVENUE = ["Total Revenue", "TotalRevenue", "Revenue"]
-_GROSS_PROFIT = ["Gross Profit", "GrossProfit"]
-_COST_OF_REVENUE = ["Cost Of Revenue", "CostOfRevenue", "Cost of Revenue"]
-_OPERATING_INCOME = ["Operating Income", "OperatingIncome", "EBIT"]
-_NET_INCOME = ["Net Income", "Net Income Common Stockholders", "NetIncome"]
-_INTEREST_EXPENSE = ["Interest Expense", "InterestExpense"]
-_TAX_PROVISION = ["Tax Provision", "Income Tax Expense"]
-_PRETAX_INCOME = ["Pretax Income", "Income Before Tax"]
+# Line-item aliases live in data.schema (the single source of truth shared with
+# the EDGAR/FMP adapters). These names are kept for readability at call sites.
+# `_TOTAL_DEBT` has no schema metric (it's derived from long+short term debt).
+_REVENUE = ALIASES["Total Revenue"]
+_GROSS_PROFIT = ALIASES["Gross Profit"]
+_COST_OF_REVENUE = ALIASES["Cost Of Revenue"]
+_OPERATING_INCOME = ALIASES["Operating Income"]
+_NET_INCOME = ALIASES["Net Income"]
+_INTEREST_EXPENSE = ALIASES["Interest Expense"]
+_TAX_PROVISION = ALIASES["Tax Provision"]
+_PRETAX_INCOME = ALIASES["Pretax Income"]
 
-_TOTAL_ASSETS = ["Total Assets", "TotalAssets"]
-_TOTAL_EQUITY = [
-    "Stockholders Equity",
-    "Total Equity Gross Minority Interest",
-    "Common Stock Equity",
-]
+_TOTAL_ASSETS = ALIASES["Total Assets"]
+_TOTAL_EQUITY = ALIASES["Stockholders Equity"]
 _TOTAL_DEBT = ["Total Debt", "TotalDebt"]
-_LONG_TERM_DEBT = ["Long Term Debt", "LongTermDebt"]
-_SHORT_TERM_DEBT = ["Current Debt", "Short Long Term Debt", "ShortTermDebt"]
-_CURRENT_ASSETS = ["Current Assets", "Total Current Assets"]
-_CURRENT_LIAB = ["Current Liabilities", "Total Current Liabilities"]
-_CASH = ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"]
-_SHARES = ["Ordinary Shares Number", "Share Issued", "Common Stock Shares Outstanding"]
+_LONG_TERM_DEBT = ALIASES["Long Term Debt"]
+_SHORT_TERM_DEBT = ALIASES["Current Debt"]
+_CURRENT_ASSETS = ALIASES["Current Assets"]
+_CURRENT_LIAB = ALIASES["Current Liabilities"]
+_CASH = ALIASES["Cash And Cash Equivalents"]
+_SHARES = ALIASES["Ordinary Shares Number"]
 
-_CFO = ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"]
-_CAPEX = ["Capital Expenditure", "CapitalExpenditure"]
-_DEPRECIATION = [
-    "Depreciation And Amortization",
-    "Depreciation Amortization Depletion",
-    "Depreciation",
-]
-_FCF = ["Free Cash Flow", "FreeCashFlow"]
+_CFO = ALIASES["Operating Cash Flow"]
+_CAPEX = ALIASES["Capital Expenditure"]
+_DEPRECIATION = ALIASES["Depreciation And Amortization"]
+_FCF = ALIASES["Free Cash Flow"]
 
 
 @dataclass

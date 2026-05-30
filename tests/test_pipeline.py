@@ -165,3 +165,31 @@ class TestRunQualityWarning:
         picks += [_fake_pick(f"OK{i}", 80) for i in range(30)]
 
         assert _data_quality_warning(picks) is None
+
+    def test_warns_when_incomplete_data_dominates(self):
+        from warren_bot.cli import _data_quality_warning
+
+        picks = [
+            _fake_pick(f"INC{i}", 0, error="incomplete data: missing cashflow")
+            for i in range(30)
+        ] + [_fake_pick("OK", 80)]
+
+        warning = _data_quality_warning(picks)
+        assert warning is not None
+        assert "incomplete statements" in warning
+
+    def test_exclusion_summary_buckets_reasons(self):
+        from warren_bot.cli import _exclusion_summary
+
+        picks = [
+            _fake_pick("A", 80),  # clean -> not counted
+            _fake_pick("B", 0, error="incomplete data: missing cashflow"),
+            _fake_pick("C", 0, error="incomplete data: missing balance, cashflow"),
+            _fake_pick("D", 0, error="below min market cap (mcap=None)"),
+            _fake_pick("E", 0, error="below min market cap (mcap=1000000)"),
+        ]
+        summary = _exclusion_summary(picks)
+        assert summary["incomplete data"] == 2
+        assert summary["missing market cap (throttled)"] == 1
+        assert summary["below min market cap"] == 1
+        assert "other error" not in summary

@@ -191,7 +191,13 @@ def build_cockpit_data(
             "ic": _round(rat.interest_coverage, 1),
             # Scores
             "score": _round(s.total, 1),
+            "scoreEff": _round(getattr(s, "effective_total", s.total), 1),
             "dims": dims,
+            # Data quality (multi-source enrichment). dq = badge summary shared
+            # with the Picks/KPI tabs; flags/prov kept for detail.
+            "dq": getattr(p, "dq", None),
+            "flags": list(getattr(p, "flags", []) or []),
+            "prov": dict(getattr(p, "provenance", {}) or {}),
             "composite": _round(rec.composite_score, 1) if rec else None,
             "tier": rec.tier if rec else None,
             "holdings": rec.holdings_count if rec else 0,
@@ -245,6 +251,7 @@ def build_kpi_rows(picks: list[Pick]) -> list[dict[str, Any]]:
             "de": _round(rat.debt_to_equity, 2),
             "beta": _round(info.get("beta"), 2),
             "score": _round(s.total, 1),
+            "dq": getattr(p, "dq", None),
         })
     return rows
 
@@ -357,6 +364,7 @@ def build_ai_disruption_data(
             "name": s.name,
             "sector": s.sector or "Unknown sector",
             "score": _round(s.total, 1),
+            "dq": getattr(p, "dq", None),
             "price": _round(info.get("regularMarketPrice") or s.valuation.price, 2),
             "mos": _round(s.valuation.margin_of_safety_pct, 0),
             "thesis": thesis,
@@ -508,6 +516,17 @@ header .archive-link:hover { color: var(--ink); border-color: #cbd5e1; backgroun
 .score-pill.strong { background: var(--hit-bg); color: var(--hit); }
 .score-pill.angle { background: var(--marg-bg); color: var(--marg); }
 .score-pill.partial { background: #efeee8; color: #6a6a6a; }
+/* Data-quality badge — shared across Picks, Cockpit, Market KPIs, AI Disruption.
+   Signals multi-source enrichment: ok = corroborated, info = gap-filled / minor
+   disagreement, warn = a key figure couldn't be corroborated / sources conflict. */
+.dq-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px;
+            padding: 2px 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+            text-transform: uppercase; cursor: help; white-space: nowrap; vertical-align: middle; }
+.dq-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dq-ok   { background: var(--hit-bg);  color: var(--hit); }
+.dq-info { background: var(--marg-bg); color: var(--marg); }
+.dq-warn { background: var(--miss-bg); color: var(--miss); }
+td .dq-badge { font-size: 9.5px; padding: 1px 6px; }
 .facts { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .facts span { margin-right: 10px; }
 .descr { font-size: 13px; line-height: 1.55; color: #334155; margin-top: 10px;
@@ -1124,6 +1143,7 @@ composite = buffett_score<br>
     </div>
     <span class="ck-sector" id="ckSector"></span>
     <span class="ck-score" id="ckScore"></span>
+    <span class="ck-dq" id="ckDq"></span>
   </div>
 
   <div class="cockpit-ring">
@@ -1441,6 +1461,7 @@ composite = buffett_score<br>
               <span class="ticker">{{ item.ticker }}</span>
               <span class="name">{{ item.name }}</span>
               <span class="impact-pill {{ item.impact|lower }}">{{ item.impact }}</span>
+              {{ dq_badge(item.dq) }}
             </div>
             <div class="disrupt-meta">
               {{ item.sector }}
@@ -1780,6 +1801,16 @@ composite = buffett_score<br>
 </div>
 
 <script>
+// Data-quality badge, shared by the client-rendered tabs (Cockpit, Market KPIs)
+// so it matches the server-rendered Picks / AI Disruption badges exactly.
+function dqBadge(dq) {
+  if (!dq) return '';
+  var title = (dq.detail || []).join(' • ').replace(/"/g, '&quot;');
+  return '<span class="dq-badge dq-' + dq.level + '" title="' + title + '">' + dq.label + '</span>';
+}
+</script>
+
+<script>
 (function() {
   // Top-level tabs
   document.querySelectorAll('.tab-btn').forEach(b => {
@@ -2047,7 +2078,7 @@ composite = buffett_score<br>
         const sc = r.sc ? r.sc.replace(/</g, '&lt;') : '';
         const nm = r.n ? r.n.replace(/</g, '&lt;') : '';
         return '<tr>' +
-          '<td class="ticker">' + r.t + '</td>' +
+          '<td class="ticker">' + r.t + ' ' + dqBadge(r.dq) + '</td>' +
           '<td class="name" title="' + nm + '">' + nm + '</td>' +
           '<td>' + sc + '</td>' +
           '<td class="num">' + fmtPrice(r.px) + '</td>' +
@@ -2261,6 +2292,7 @@ composite = buffett_score<br>
       const sc = c.score == null ? 0 : c.score;
       scoreEl.className = 'ck-score' + (sc >= 75 ? '' : (sc >= 60 ? ' angle' : ' weak'));
       scoreEl.textContent = (c.score == null ? '—' : c.score.toFixed(0)) + ' / 100';
+      document.getElementById('ckDq').innerHTML = dqBadge(c.dq);
       tickerBadge.textContent = c.t;
       yahooLink.href = 'https://finance.yahoo.com/quote/' + encodeURIComponent(c.t);
 
@@ -2402,6 +2434,7 @@ _PICK_CARD = r"""
     <span class="ticker">{{ p.score.ticker }}</span>
     <span class="name">{{ p.score.name }}</span>
     <span class="score-pill {{ bucket }}">{{ '%.1f'|format(p.score.total) }}</span>
+    {{ dq_badge(p.dq) }}
   </div>
   <div class="facts">
     {% set mcap = market_cap_label(p) %}
@@ -2482,6 +2515,19 @@ def _dim_score(p: Pick, name: str) -> float:
     return 0.0
 
 
+def _dq_badge(dq: dict | None):
+    """Render the shared data-quality badge. Used as a Jinja global so the
+    server-rendered Picks/AI-Disruption cards and the client JS all emit the same
+    markup. Returns empty for un-enriched picks (no badge)."""
+    from markupsafe import Markup
+    if not dq:
+        return Markup("")
+    title = " • ".join(dq.get("detail", []))
+    # Markup.format escapes the substituted values (level/label/title are data).
+    return Markup('<span class="dq-badge dq-{lvl}" title="{title}">{label}</span>').format(
+        lvl=dq.get("level", ""), title=title, label=dq.get("label", ""))
+
+
 def render_dashboard(
     strong: list[Pick],
     angles: list[Pick],
@@ -2499,6 +2545,7 @@ def render_dashboard(
 
     env = Environment(autoescape=True)
     env.globals["dim_score"] = _dim_score
+    env.globals["dq_badge"] = _dq_badge
     env.globals["stock_news"] = stock_news
     env.globals["full_description"] = _full_description
     env.globals["market_cap_label"] = _market_cap_label
