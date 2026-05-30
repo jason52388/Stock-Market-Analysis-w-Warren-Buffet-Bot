@@ -1681,7 +1681,7 @@ composite = buffett_score<br>
             {% if item.news %}
               {% for n in item.news %}
               <div class="news-item">
-                {% if n.url %}<a href="{{ n.url }}" target="_blank">{{ n.title }}</a>{% else %}<strong>{{ n.title }}</strong>{% endif %}
+                {% if n.url %}<a href="{{ n.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>{% else %}<strong>{{ n.title }}</strong>{% endif %}
                 <div class="meta">{{ n.publisher }}{% if n.date %} · {{ n.date }}{% endif %}</div>
                 {% if n.summary %}<div class="sum">{{ n.summary }}</div>{% endif %}
               </div>
@@ -1771,7 +1771,7 @@ composite = buffett_score<br>
     <div class="ai-briefing-grid">
       {% for a in ai_disruption.articles %}
       <div class="ai-briefing-item">
-        <a href="{{ a.url }}" target="_blank">{{ a.title }}</a>
+        <a href="{{ a.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ a.title }}</a>
         <div class="meta">{{ a.source }}{% if a.date %} · {{ a.date }}{% endif %} · {{ a.topic }}</div>
         {% if a.summary %}<div class="summary">{{ a.summary }}</div>{% endif %}
       </div>
@@ -1819,7 +1819,7 @@ composite = buffett_score<br>
     <div class="article" data-topic="{{ topic }}" data-source="{{ a.source }}"
          data-tier="{{ a.tier }}"
          data-search="{{ (a.title + ' ' + a.summary)|lower }}">
-      <div class="title"><a href="{{ a.url }}" target="_blank">{{ a.title }}</a></div>
+      <div class="title"><a href="{{ a.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ a.title }}</a></div>
       <div class="meta">
         <span class="tier-{{ a.tier }}">{{ a.source }}</span>
         {% if a.display_date %} · {{ a.display_date }}{% endif %}
@@ -2082,6 +2082,12 @@ function dqBadge(dq) {
   }
   function escAttr(s) {
     return escHtml(s).replace(/"/g, '&quot;');
+  }
+  function safeUrl(s) {
+    // Only http(s) links are allowed through; anything else (javascript:,
+    // data:, vbscript:, …) from third-party feeds is neutralized to '#'.
+    var u = String(s == null ? '' : s).trim();
+    return /^https?:\/\//i.test(u) ? escAttr(u) : '#';
   }
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.addEventListener('click', () => {
@@ -2357,15 +2363,16 @@ function dqBadge(dq) {
       const start = page * PAGE_SIZE;
       const slice = filtered.slice(start, start + PAGE_SIZE);
       const html = slice.map(r => {
-        const sc = r.sc ? r.sc.replace(/</g, '&lt;') : '';
-        const nm = r.n ? r.n.replace(/</g, '&lt;') : '';
+        const sc = escHtml(r.sc || '');
+        const nm = escHtml(r.n || '');
+        const nmAttr = escAttr(r.n || '');
         const cockpitBtn = hasCockpit
           ? '<button class="kpi-cockpit-link" type="button" data-ticker="' + escAttr(r.t) + '">Cockpit</button>'
           : '';
         return '<tr>' +
           '<td class="ticker"><div class="ticker-cell"><span>' + escHtml(r.t) + '</span>' +
             cockpitBtn + dqBadge(r.dq) + '</div></td>' +
-          '<td class="name" title="' + nm + '">' + nm + '</td>' +
+          '<td class="name" title="' + nmAttr + '">' + nm + '</td>' +
           '<td>' + sc + '</td>' +
           '<td class="num">' + fmtPrice(r.px) + '</td>' +
           '<td class="num">' + (r.mc == null ? '<span class="na">—</span>' : fmtMcap(r.mc)) + '</td>' +
@@ -2699,8 +2706,8 @@ function dqBadge(dq) {
       } else {
         newsEl.innerHTML = c.news.map(n =>
           '<div class="news-item">' +
-            '<a href="' + n.u + '" target="_blank">' + n.t.replace(/</g, '&lt;') + '</a>' +
-            '<div class="meta">' + (n.p || '') + (n.d ? ' · ' + n.d : '') + '</div>' +
+            '<a href="' + safeUrl(n.u) + '" target="_blank" rel="noopener noreferrer">' + escHtml(n.t) + '</a>' +
+            '<div class="meta">' + escHtml(n.p || '') + (n.d ? ' · ' + escHtml(n.d) : '') + '</div>' +
           '</div>'
         ).join('');
       }
@@ -2820,7 +2827,7 @@ _PICK_CARD = r"""
       {% if news %}
         {% for n in news %}
         <div class="news-item">
-          <a href="{{ n.url }}" target="_blank">{{ n.title }}</a>
+          <a href="{{ n.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>
           <div class="meta">{{ n.publisher }}{% if n.published_at %} · {{ n.published_at.strftime('%b %d') }}{% endif %}</div>
           {% if n.summary %}<div class="sum">{{ n.summary }}</div>{% endif %}
         </div>
@@ -2840,6 +2847,14 @@ def _dim_score(p: Pick, name: str) -> float:
         if d.name == name:
             return round(d.score, 1)
     return 0.0
+
+
+def _safe_url(value) -> str:
+    """Allow only http(s) URLs through to an href. Any other scheme
+    (javascript:, data:, vbscript:, …) coming from third-party news/RSS feeds
+    is neutralized to '#'. Autoescape still escapes the returned string."""
+    u = ("" if value is None else str(value)).strip()
+    return u if u[:7].lower() == "http://" or u[:8].lower() == "https://" else "#"
 
 
 def _dq_badge(dq: dict | None):
@@ -2871,6 +2886,7 @@ def render_dashboard(
     from markupsafe import Markup
 
     env = Environment(autoescape=True)
+    env.filters["safe_url"] = _safe_url
     env.globals["dim_score"] = _dim_score
     env.globals["dq_badge"] = _dq_badge
     env.globals["stock_news"] = stock_news

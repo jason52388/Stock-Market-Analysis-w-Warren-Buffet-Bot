@@ -141,7 +141,9 @@ def _business_snapshot(ts: TickerScore, snap_info: dict) -> str:
     return one_liner + "." + extra if one_liner and not one_liner.endswith(".") else one_liner + extra
 
 
-def generate_thesis(ts: TickerScore, snap_info: dict | None = None) -> Thesis:
+def generate_thesis(ts: TickerScore, snap_info: dict | None = None, *,
+                    strong_threshold: float = 80.0,
+                    angle_threshold: float = 70.0) -> Thesis:
     snap_info = snap_info or {}
 
     # Errored scores have empty dimensions — return a minimal thesis so downstream
@@ -157,9 +159,11 @@ def generate_thesis(ts: TickerScore, snap_info: dict | None = None) -> Thesis:
             watch_outs=f"Data error: {ts.error or 'missing financials'}.",
         )
 
-    if ts.total >= 75:
+    # Use the same thresholds the pipeline uses to bucket picks, so the thesis
+    # label never contradicts the tier the card is actually shown under.
+    if ts.total >= strong_threshold:
         bucket = "Strong match"
-    elif ts.total >= 60:
+    elif ts.total >= angle_threshold:
         bucket = "Interesting angle"
     else:
         bucket = "Below threshold"

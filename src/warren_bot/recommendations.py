@@ -113,7 +113,12 @@ def build_recommendations(
     for p in picks:
         if p.score.error:
             continue
-        if p.score.total < min_quant_score:
+        # Gate and rank on the *effective* score (raw quant minus the cross-source
+        # corroboration penalty) so the Recommended tab agrees with split_picks /
+        # the final ranking — an uncorroborated name that got demoted out of the
+        # pick tiers shouldn't reappear at the top here.
+        eff = getattr(p.score, "effective_total", p.score.total)
+        if eff < min_quant_score:
             continue
         # Don't recommend a name whose score rests on too few data points — a
         # composite built on incomplete fundamentals is not a confident call.
@@ -137,8 +142,9 @@ def build_recommendations(
             sells_count=s_count, sells_rank=s_rank,
         )
 
-        # Composite = quant base + signal bonuses/penalties.
-        composite = p.score.total
+        # Composite = quant base (effective, post-corroboration) + signal
+        # bonuses/penalties.
+        composite = eff
         composite += _rank_bonus(h_rank, holdings_total, max_bonus=8.0)
         composite += _rank_bonus(b_rank, buys_total, max_bonus=10.0)
         composite -= _rank_bonus(s_rank, sells_total, max_bonus=8.0)

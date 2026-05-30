@@ -196,12 +196,30 @@ class TestAiDisruptionNarrative:
         assert data["positive"][0]["description"] == summary
 
 
+class TestSafeUrl:
+    def test_allows_http_and_https(self):
+        from warren_bot.dashboard.render import _safe_url
+
+        assert _safe_url("https://finance.yahoo.com/x") == "https://finance.yahoo.com/x"
+        assert _safe_url("http://example.com") == "http://example.com"
+        assert _safe_url("  https://example.com  ") == "https://example.com"
+
+    def test_neutralizes_dangerous_schemes(self):
+        from warren_bot.dashboard.render import _safe_url
+
+        for bad in ("javascript:alert(1)", "JavaScript:alert(1)",
+                    "data:text/html,<script>", "vbscript:msgbox", "//evil.test",
+                    "/relative/path", "", None):
+            assert _safe_url(bad) == "#"
+
+
 class TestTemplateCompiles:
     def test_full_template_compiles_with_subtabs(self):
         # Guards against Jinja syntax errors in the restructured disruption card.
-        from warren_bot.dashboard.render import _TEMPLATE
+        from warren_bot.dashboard.render import _TEMPLATE, _safe_url
 
         env = Environment(autoescape=True)
+        env.filters["safe_url"] = _safe_url  # registered in render_dashboard()
         env.from_string(_TEMPLATE)  # raises TemplateSyntaxError on a bad edit
         assert 'data-dtab="reasoning"' in _TEMPLATE
         assert 'data-dtab="about"' in _TEMPLATE

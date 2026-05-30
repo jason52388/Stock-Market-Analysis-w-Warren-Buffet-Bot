@@ -28,15 +28,28 @@ jobs:
     steps:
       - name: Kick off detached bot run over SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          # Pass the dispatch input through the environment instead of
+          # interpolating ${{ }} straight into the script — direct interpolation
+          # would let a crafted input inject shell commands on the VPS.
+          # `envs: LIMIT` forwards these vars to the remote shell.
+          LIMIT: ${{ github.event.inputs.limit }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           command_timeout: 5m
+          envs: LIMIT,VPS_PATH
           script: |
             set -euo pipefail
-            cd "${{ secrets.VPS_PATH }}"
-            LIMIT="${{ github.event.inputs.limit }}"
+            cd "$VPS_PATH"
+            # Only a bare positive integer is accepted; reject anything else so
+            # the value can never carry shell metacharacters into the run below.
+            if [ -n "$LIMIT" ] && ! printf '%s' "$LIMIT" | grep -qE '^[0-9]+$'; then
+              echo "Invalid limit '$LIMIT' — must be a positive integer." >&2
+              exit 1
+            fi
             ARGS=""
             if [ -n "$LIMIT" ]; then ARGS="--limit $LIMIT"; fi
 

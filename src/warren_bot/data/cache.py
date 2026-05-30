@@ -4,6 +4,11 @@ Thread-safety: a single shared `Cache` instance is safe for concurrent
 get/set/prune from multiple threads. The connection is opened with
 `check_same_thread=False` and every read/write is serialized through a
 threading.Lock, since sqlite3 will otherwise raise from non-owner threads.
+
+Security: payloads are pickled. This is safe only because the cache file is
+written exclusively by this process. NEVER point this Cache at a SQLite file
+from an untrusted/shared source — `pickle.loads` on attacker-controlled bytes
+is arbitrary code execution.
 """
 from __future__ import annotations
 

@@ -26,6 +26,16 @@ class Pick:
     dq: dict | None = None      # data-quality badge summary (data.merge.summarize_quality)
 
 
+def _thesis_thresholds(settings: dict) -> dict[str, float]:
+    """Surfacing thresholds passed to the thesis generator so its bucket label
+    ("Strong match" / "Interesting angle") matches the tier split_picks assigns."""
+    thr = settings.get("score_thresholds", {})
+    return {
+        "strong_threshold": float(thr.get("strong_match", 80)),
+        "angle_threshold": float(thr.get("interesting_angle", 70)),
+    }
+
+
 def load_universe(settings: dict) -> list[str]:
     root = repo_root()
     tickers: list[str] = []
@@ -77,9 +87,11 @@ def screen_one(ticker: str, settings: dict | None = None) -> Pick | None:
     fetcher = _build_fetcher(settings)
     snap = fetcher.get(ticker)
     score = score_ticker(snap, settings)
+    thr = _thesis_thresholds(settings)
     if score.error:
-        return Pick(score=score, thesis=generate_thesis(score, snap.info), snap_info=snap.info)
-    thesis = generate_thesis(score, snap.info)
+        return Pick(score=score, thesis=generate_thesis(score, snap.info, **thr),
+                    snap_info=snap.info)
+    thesis = generate_thesis(score, snap.info, **thr)
     return Pick(score=score, thesis=thesis, snap_info=snap.info)
 
 
@@ -90,7 +102,7 @@ def _score_one(
     try:
         snap: TickerSnapshot = fetcher.get(ticker, force_refresh=force_refresh)
         ts = score_ticker(snap, settings)
-        thesis = generate_thesis(ts, snap.info)
+        thesis = generate_thesis(ts, snap.info, **_thesis_thresholds(settings))
         return Pick(score=ts, thesis=thesis, snap_info=snap.info)
     except Exception as e:
         log.exception("Failed to score %s: %s", ticker, e)
@@ -206,7 +218,7 @@ def enrich_picks(picks: list[Pick], settings: dict, *, fetcher: Fetcher) -> list
                                         field_divergence=field_div)
         ts = score_ticker(merged, settings)
         ts.corroboration_penalty = _penalty_for(flags)
-        thesis = generate_thesis(ts, merged.info)
+        thesis = generate_thesis(ts, merged.info, **_thesis_thresholds(settings))
         return ticker, Pick(score=ts, thesis=thesis, snap_info=merged.info,
                             provenance=merged.provenance, flags=merged.flags,
                             dq=summarize_quality(merged.provenance, flags))

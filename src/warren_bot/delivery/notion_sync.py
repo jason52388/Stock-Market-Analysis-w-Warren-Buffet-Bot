@@ -60,7 +60,9 @@ def _props(p: Pick) -> dict:
         "Thesis": {"rich_text": [{"text": {"content": thesis_md}}]},
     }
     if s.sector:
-        props["Sector"] = {"select": {"name": s.sector[:100]}}
+        # Notion rejects select option names containing a comma — strip them so
+        # an unusual sector label can't fail the whole upsert.
+        props["Sector"] = {"select": {"name": s.sector[:100].replace(",", " ")}}
     if v.price is not None:
         props["Price"] = {"number": round(v.price, 2)}
     if v.fcf_yield_pct is not None:
