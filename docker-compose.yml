@@ -58,12 +58,20 @@ services:
       - caddy_config:/config
     networks:
       - warren
+      # Shared network so this Caddy can reverse_proxy to other apps on the
+      # VPS (e.g. the YalamanBaby site) by container name.
+      - proxy-shared
     depends_on:
       - bot
 
 networks:
   warren:
     driver: bridge
+  # External: created out-of-band on the VPS so multiple compose projects can
+  # share it without each one trying to manage it. The other project's deploy
+  # workflow runs `docker network create proxy-shared` (idempotent).
+  proxy-shared:
+    external: true
 
 volumes:
   warren_cache:

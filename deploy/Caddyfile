@@ -62,8 +62,9 @@ yalamanbaby.com {
     redir https://www.yalamanbaby.com{uri} permanent
 }
 
-# www -> reverse proxy to the baby container's loopback port on the host.
+# www -> reverse proxy directly to the baby container over the shared
+# `proxy-shared` Docker network (this caddy is attached to it too).
 www.yalamanbaby.com {
     encode gzip
-    reverse_proxy 172.17.0.1:8088
+    reverse_proxy yalaman-baby:80
 }
