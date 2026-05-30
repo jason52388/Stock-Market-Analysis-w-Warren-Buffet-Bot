@@ -1067,7 +1067,7 @@ composite = buffett_score<br>
   <div class="section-head">
     Recommended — <span class="count" id="recCount">{{ recommendations|length }}</span>
     <span style="color: var(--muted); font-weight: 400; font-size: 12px; text-transform: none;">
-      · ranked by composite of Buffett score + hedge fund signal
+      · hedge-fund + Buffett names rank first, then Buffett-only, then net-selling — composite breaks ties within each group
     </span>
   </div>
 
