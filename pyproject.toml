@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Warren Buffett / Berkshire Hathaway stock screening bot"
 requires-python = ">=3.11"
 dependencies = [
-    "yfinance>=0.2.50",
+    "yfinance>=0.2.54",
+    # curl_cffi gives yfinance browser-TLS impersonation; without it yfinance
+    # falls back to plain requests and Yahoo rate-limits/blocks far more often.
+    # Pin it explicitly so the image never silently ships without it.
+    "curl_cffi>=0.7",
     "pandas>=2.2",
     "numpy>=1.26",
     "click>=8.1",

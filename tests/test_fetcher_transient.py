@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from warren_bot.data.fetcher import Fetcher, TickerSnapshot, _fetch_ticker  # noqa: F401
+from warren_bot.data.fetcher import (  # noqa: F401
+    Fetcher,
+    RateLimiter,
+    TickerSnapshot,
+    _fetch_ticker,
+    _pull,
+)
 
 
 class TestIsTransientError:
@@ -36,6 +42,50 @@ class TestIsTransientError:
         snap = TickerSnapshot(ticker="AAPL", info={"x": 1}, error=None)
         assert Fetcher._is_transient_error(snap) is False
 
+    def test_incomplete_data_is_transient(self):
+        # A throttled per-statement pull should re-fetch next run, not stick for
+        # the full weekly cache window.
+        snap = TickerSnapshot(
+            ticker="AAPL",
+            info={"shortName": "Apple Inc."},
+            error="incomplete data: missing cashflow",
+        )
+        assert Fetcher._is_transient_error(snap) is True
+
+
+class TestCompletenessGate:
+    """All four statements are required before a ticker can be scored."""
+
+    def _df(self):
+        import pandas as pd
+        return pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["Total Revenue"])
+
+    def test_full_snapshot_is_ok(self):
+        df = self._df()
+        snap = TickerSnapshot(ticker="OK", income=df, balance=df,
+                              cashflow=df, price_history=df)
+        assert snap.missing_statements() == []
+        assert snap.ok is True
+
+    def test_missing_cashflow_reports_incomplete(self):
+        import pandas as pd
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        df = self._df()
+        ticker_obj = SimpleNamespace(
+            info={"shortName": "Bigco", "marketCap": 5e11},
+            fast_info={"market_cap": 5e11},
+            get_income_stmt=lambda freq: df,
+            get_balance_sheet=lambda freq: df,
+            get_cashflow=lambda freq: pd.DataFrame(),   # throttled -> empty
+            history=lambda **kwargs: df,
+        )
+        with patch("warren_bot.data.fetcher.yf.Ticker", return_value=ticker_obj):
+            snap = _fetch_ticker("BIG", min_market_cap=300_000_000)
+        assert snap.missing_statements() == ["cashflow"]
+        assert snap.error == "incomplete data: missing cashflow"
+        assert snap.ok is False  # not scoreable -> excluded downstream
+
 
 class TestMarketCapPrefilter:
     def test_fast_info_market_cap_rescues_partial_info(self):
@@ -54,7 +104,11 @@ class TestMarketCapPrefilter:
             snap = _fetch_ticker("CAT", min_market_cap=300_000_000)
 
         assert snap.info["marketCap"] == 150_000_000_000
-        assert snap.error == "no financials returned"
+        # fast_info rescued the market cap (passes the pre-filter), but every
+        # statement pull came back empty -> reported as incomplete, not scored.
+        assert snap.error is not None
+        assert snap.error.startswith("incomplete data")
+        assert snap.missing_statements() == ["income", "balance", "cashflow", "price_history"]
 
 
 class TestTransientShortTTL:
@@ -116,6 +170,127 @@ class TestTransientShortTTL:
         assert result.info["marketCap"] == 3e12
         cache.close()
 
+class TestStatementVsPriceTtl:
+    """Statements are cached far longer than the price, so a weekly run reuses
+    quarterly-stable statements and only refreshes the quote — and a quote
+    refresh must NOT reset the statement clock."""
+
+    def _full_snap(self, info=None, **ts):
+        import pandas as pd
+        df = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["Total Revenue"])
+        return TickerSnapshot(ticker="AAPL", info=info or {"x": 1}, income=df, balance=df,
+                              cashflow=df, price_history=df, **ts)
+
+    def test_stale_statements_trigger_full_refetch(self, tmp_path):
+        import time
+        from warren_bot.data.cache import Cache
+        cache = Cache(tmp_path / "s.sqlite", ttl_seconds=3600)
+        fetcher = Fetcher(cache, min_market_cap=0,
+                          statement_ttl_seconds=10 * 24 * 3600)  # 10 days
+        now = time.time()
+        old = self._full_snap(statements_asof=now - 20 * 24 * 3600,  # 20d > 10d -> stale
+                              price_asof=now)
+        cache.set("snapshot", "AAPL", old)
+        fresh = self._full_snap(info={"y": 2}, statements_asof=now, price_asof=now)
+        with patch("warren_bot.data.fetcher._fetch_ticker", return_value=fresh) as mf:
+            res = fetcher.get("AAPL")
+            mf.assert_called_once()
+        assert res.info == {"y": 2}
+        cache.close()
+
+    def test_fresh_statements_stale_price_refreshes_quote_only(self, tmp_path):
+        import time
+        from warren_bot.data.cache import Cache
+        cache = Cache(tmp_path / "s.sqlite", ttl_seconds=3600)
+        fetcher = Fetcher(cache, min_market_cap=0,
+                          statement_ttl_seconds=30 * 24 * 3600, price_ttl_seconds=3600)
+        now = time.time()
+        stmt_asof = now - 5 * 24 * 3600          # 5d old statements -> still fresh
+        snap = self._full_snap(statements_asof=stmt_asof, price_asof=now - 2 * 3600)  # price 2h>1h stale
+        cache.set("snapshot", "AAPL", snap)
+        with patch("warren_bot.data.fetcher._fetch_ticker") as mfetch, \
+             patch("warren_bot.data.fetcher._refresh_quote", return_value=True) as mref:
+            res = fetcher.get("AAPL")
+            mfetch.assert_not_called()       # NO full statement pull
+            mref.assert_called_once()        # just the cheap quote refresh
+        assert res.statements_asof == stmt_asof   # statement clock preserved
+        cache.close()
+
+    def test_refresh_quote_preserves_statement_clock(self):
+        from warren_bot.data.fetcher import _refresh_quote
+        snap = TickerSnapshot(ticker="AAPL", info={}, statements_asof=123.0)
+        with patch("warren_bot.data.fetcher.yf.Ticker") as MT:
+            MT.return_value.fast_info = {"last_price": 10.0, "market_cap": 1e9}
+            _refresh_quote(snap, RateLimiter(0))
+        assert snap.statements_asof == 123.0           # untouched
+        assert snap.info["currentPrice"] == 10.0       # price updated
+
+
+class TestRateLimiter:
+    def test_spaces_calls_to_the_configured_rate(self):
+        import time
+        rl = RateLimiter(requests_per_sec=50)  # 20ms min interval
+        start = time.monotonic()
+        for _ in range(5):
+            rl.wait()
+        elapsed = time.monotonic() - start
+        # 5 releases at 20ms spacing => ~4 intervals (~80ms). Allow slack.
+        assert elapsed >= 0.06
+
+    def test_zero_rate_is_unbounded(self):
+        import time
+        rl = RateLimiter(requests_per_sec=0)
+        start = time.monotonic()
+        for _ in range(100):
+            rl.wait()
+        assert time.monotonic() - start < 0.05  # no artificial delay
+
+
+class TestBlankRetry:
+    """yfinance returns an empty frame (no exception) when throttled, so the
+    fetch re-pulls blanks itself instead of relying on tenacity."""
+
+    def test_pull_retries_blank_then_succeeds(self):
+        import pandas as pd
+        good = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["X"])
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            return pd.DataFrame() if calls["n"] < 3 else good
+
+        out = _pull(getter, RateLimiter(0), attempts=3, backoff=0)
+        assert calls["n"] == 3
+        assert out is good
+
+    def test_pull_gives_up_after_attempts(self):
+        import pandas as pd
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            return pd.DataFrame()  # always blank
+
+        out = _pull(getter, RateLimiter(0), attempts=2, backoff=0)
+        assert calls["n"] == 2          # bounded, not infinite
+        assert out is not None and out.empty
+
+    def test_pull_swallows_exceptions_and_retries(self):
+        import pandas as pd
+        good = pd.DataFrame({pd.Timestamp("2024-12-31"): [1.0]}, index=["X"])
+        calls = {"n": 0}
+
+        def getter():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient throttle")
+            return good
+
+        out = _pull(getter, RateLimiter(0), attempts=2, backoff=0)
+        assert out is good
+
+
+class TestForceRefresh:
     def test_force_refresh_bypasses_cache(self, tmp_cache):
         fetcher = Fetcher(tmp_cache, min_market_cap=0)
         cached = TickerSnapshot(ticker="AAPL", info={"x": 1})

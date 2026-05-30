@@ -12,10 +12,12 @@ from .statement_utils import aligned, frame, row, series_values, trend_growth
 class GrowthSet:
     revenue_cagr_pct: float | None
     eps_cagr_pct: float | None              # we use net income as a proxy when EPS missing
-    years_in_window: int
+    years_in_window: int                    # widest statement history available
     years_profitable: int                   # net income > 0 in last N
     fcf_positive_years: int
     share_count_cagr_pct: float | None      # negative = buybacks
+    net_years: int = 0                      # # of usable net-income years
+    fcf_years: int = 0                      # # of usable FCF years
 
 
 def _eps_proxy_series(snap: TickerSnapshot) -> list[float]:
@@ -55,4 +57,11 @@ def compute_growth(snap: TickerSnapshot) -> GrowthSet:
         years_profitable=sum(1 for v in net if v is not None and v > 0),
         fcf_positive_years=sum(1 for v in fcf if v is not None and v > 0),
         share_count_cagr_pct=(sh_g * 100.0) if sh_g is not None else None,
+        # Count-based consistency metrics must be judged against the history that
+        # actually exists for *their own* statement, not the widest window across
+        # all statements. Revenue often runs longer than net income / FCF in
+        # yfinance; scoring "4 profitable years" against a 10-year revenue window
+        # wrongly brands a clean 4/4 record a miss.
+        net_years=len(net),
+        fcf_years=len(fcf),
     )

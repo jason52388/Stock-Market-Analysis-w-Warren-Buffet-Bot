@@ -121,6 +121,66 @@ def test_data_coverage_reported(base_settings):
 
 
 # --------------------------------------------------------------------------
+# #1b The na-exclusion logic must hold at the DIMENSION level too: a dimension
+# with no usable cells (e.g. no cash-flow statement -> the whole Valuation block
+# is n/a) must NOT contribute weight*0 and deflate the total. The total is
+# renormalized over the dimensions that actually carry data.
+# --------------------------------------------------------------------------
+def test_total_renormalized_over_dimensions_with_data(base_settings):
+    years = [2024, 2023, 2022, 2021]
+    income = _df({
+        "Total Revenue": [1000, 950, 900, 850],
+        "Net Income": [250, 230, 210, 190],
+        "Gross Profit": [700, 665, 630, 595],
+        "Operating Income": [300, 285, 270, 255],
+        "Tax Provision": [60, 57, 54, 51],
+        "Pretax Income": [300, 285, 270, 255],
+    }, years)
+    balance = _df({
+        "Stockholders Equity": [800, 750, 700, 650],
+        "Total Debt": [100, 100, 100, 100],
+        "Current Assets": [500, 480, 460, 440],
+        "Current Liabilities": [200, 200, 200, 200],
+    }, years)
+    # No cashflow, no price history -> entire Valuation dimension is n/a.
+    ts = score_ticker(_snap(info={"shortName": "S", "sector": "Tech"},
+                            income=income, balance=balance), base_settings)
+    val = next(d for d in ts.dimensions if d.name.startswith("Valuation"))
+    assert all(c.status == "na" for c in val.cells)
+    # With the missing dimension weighted as a hard 0, the total would be dragged
+    # to ~59. Renormalized over the present dimensions it must clear 70.
+    assert ts.total > 70
+
+
+# --------------------------------------------------------------------------
+# #1c Count-based consistency metrics are judged against the history that exists
+# for their OWN statement, not the widest statement. Revenue commonly runs more
+# years than net income / FCF in yfinance; a clean 4/4 profitable record must
+# not be scored against a 10-year revenue window (which branded it a miss).
+# --------------------------------------------------------------------------
+def test_consistency_counts_use_own_statement_window(base_settings):
+    years = [2024, 2023, 2022, 2021]
+    ten = list(range(2015, 2025))[::-1]
+    income = pd.concat([
+        _df({"Total Revenue": [2000 - 50 * i for i in range(10)]}, ten),
+        _df({"Net Income": [250, 230, 210, 190]}, years),
+    ], sort=True)
+    ts = score_ticker(_snap(info={"shortName": "X"}, income=income,
+                            balance=_df({"Stockholders Equity": [800] * 4}, years)),
+                      base_settings)
+    cons = next(d for d in ts.dimensions if d.name == "Consistency")
+    yp = next(c for c in cons.cells if c.criterion == "years_profitable")
+    fcf = next(c for c in cons.cells if c.criterion == "fcf_positive_years")
+    # 4 profitable years out of the 4 net-income years available -> a real (if
+    # thin-history-damped) score, not a hard miss against a phantom 10y window.
+    assert yp.value == 4.0
+    assert yp.label.endswith("(of 4)")
+    assert yp.status != "miss"
+    # No cash-flow statement at all -> FCF cell is n/a (excluded), not a hard 0.
+    assert fcf.status == "na"
+
+
+# --------------------------------------------------------------------------
 # #7 robust (log-linear) growth instead of endpoint CAGR.
 # --------------------------------------------------------------------------
 def test_trend_growth_clean_exponential():

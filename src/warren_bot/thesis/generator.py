@@ -85,8 +85,10 @@ def _financial_posture(ts: TickerScore) -> str:
 
 def _growth(ts: TickerScore) -> str:
     g = ts.growth
-    profitable = f"{g.years_profitable}/{g.years_in_window} profitable years"
-    fcf = f"{g.fcf_positive_years}/{g.years_in_window} FCF-positive years"
+    # Show each count against its own statement's available history, matching how
+    # the scorer judges them (net income / FCF often run shorter than revenue).
+    profitable = f"{g.years_profitable}/{g.net_years or g.years_in_window} profitable years"
+    fcf = f"{g.fcf_positive_years}/{g.fcf_years or g.years_in_window} FCF-positive years"
     rev = _fmt(g.revenue_cagr_pct, "%")
     eps = _fmt(g.eps_cagr_pct, "%")
     consistency = _qual(ts.dimensions[2].score)

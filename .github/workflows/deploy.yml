@@ -2,13 +2,18 @@ name: Deploy to Hostinger VPS
 
 # Auto-deploys on push to main. SSHes into the VPS, makes sure a clean clone of
 # the repo exists, writes .env from GitHub secrets, and (re)starts the
-# containers. The weekly bot run is scheduled by cron INSIDE the container —
-# this workflow does NOT run the bot, it only ships code + config.
+# containers. This workflow ships CODE + CONFIG ONLY — it does NOT run the
+# screener. Data ingestion is decoupled (it's slow/flaky and must not race a
+# deploy timeout): it happens only via the weekly cron INSIDE the container, or
+# the on-demand "Run bot now" workflow. The site serves the last complete run
+# until a new one finishes.
 #
 # Required secrets:
 #   Connection:  VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_PATH
 #   App config:  SITE_HOSTNAME, TZ, GMAIL_FROM, GMAIL_TO, GMAIL_APP_PASSWORD,
 #                NOTION_API_KEY, NOTION_DATABASE_ID
+#   Sources:     SEC_USER_AGENT (optional; EDGAR works without it),
+#                FMP_API_KEY (optional), FINNHUB_API_KEY (optional)
 #
 # The app-config secrets are written to .env on the VPS on every deploy, so the
 # server never needs manual configuration — change a secret, push, done.
@@ -38,6 +43,13 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_SECRET }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          # Secondary data sources (tier-2 enrichment). EDGAR needs no key, only
+          # a declared contact (fair-access); if the secret is unset it falls back
+          # to a repo-identifying UA in code, so EDGAR works out of the box.
+          # FMP/Finnhub stay inactive in code until their key is non-empty.
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -47,7 +59,7 @@ jobs:
           command_timeout: 40m
           # Forward the app-config env vars into the remote shell so the heredoc
           # below can write them into .env.
-          envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID
+          envs: SITE_HOSTNAME,TZ,GMAIL_FROM,GMAIL_TO,GMAIL_APP_PASSWORD,NOTION_API_KEY,NOTION_DATABASE_ID,SEC_USER_AGENT,FMP_API_KEY,FINNHUB_API_KEY
           script: |
             set -euo pipefail
 
@@ -78,16 +90,23 @@ jobs:
             GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD}
             NOTION_API_KEY=${NOTION_API_KEY}
             NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+            SEC_USER_AGENT=${SEC_USER_AGENT:-}
+            FMP_API_KEY=${FMP_API_KEY:-}
+            FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
             EOF
 
             docker compose up -d --build
 
-            # Refresh the website with the just-deployed code: regenerate the
-            # dashboard and rebuild the index pages. --skip-delivery means NO
-            # email/Notion on a push — those still go out only on the weekly
-            # cron. Give the container a moment to be ready before exec.
-            sleep 3
-            docker compose exec -T bot warren-bot run --skip-delivery
+            # NOTE: the deploy ships CODE ONLY — it does NOT run the screener.
+            # A full yfinance screen of ~5,673 tickers takes hours and would race
+            # the SSH/job timeouts, producing a half-finished (alphabetically
+            # truncated) dashboard on every push. Data refresh is decoupled to the
+            # two paths that have no timeout: the weekly cron (in-container, Sun
+            # 18:00) and the manual "Run bot now" workflow. The site keeps serving
+            # the last COMPLETE run until one of those finishes a new one.
+            #
+            # build-index is cheap (just relists archived runs) and safe to run on
+            # every deploy so template/index changes show up immediately.
             docker compose exec -T bot /app/deploy/build-index.sh
 
             docker image prune -f

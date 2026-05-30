@@ -48,7 +48,12 @@ criteria:
 # Data fetching
 data:
   cache_path: .cache/warren_bot.sqlite
-  cache_ttl_hours: 168            # 1 week
+  cache_ttl_hours: 168            # 1 week — default TTL (hedge-fund/dataroma data)
+  # Statements only change on quarterly earnings, so cache them far longer than
+  # the price. This keeps the WEEKLY run cheap: statements are reused and only a
+  # ~1-request price refresh runs per name, instead of a full cold re-pull.
+  statement_ttl_hours: 720        # 30 days
+  price_ttl_hours: 24             # refresh price/market cap on hits older than this
   yf_max_retries: 3
   yf_batch_size: 25
   yf_batch_sleep_sec: 2
@@ -56,6 +61,66 @@ data:
   # Buffett rarely touches micro-caps; this dramatically cuts runtime on the
   # all-US universe. Set to 0 to disable.
   min_market_cap_usd: 300000000   # $300M
+
+# Secondary data sources (tier-2 enrichment). The free yfinance sweep screens the
+# whole universe; these are consulted only on the finalists + completeness-gate
+# failures (dozens of names per run, within free-tier limits) to gap-fill missing
+# statements and cross-check key figures. yfinance always stays the scoring base
+# (gap-fill never overwrites it). EDGAR needs no key; FMP/Finnhub auto-activate
+# only when their API key env var is set.
+sources:
+  edgar:                          # SEC EDGAR XBRL — free, authoritative filings
+    enabled: true
+    # SEC fair-access policy requires a declared contact. Override via env if you
+    # prefer not to commit one. Keep it a real, reachable address.
+    user_agent: ${SEC_USER_AGENT}
+    requests_per_sec: 8
+    facts_ttl_hours: 720          # 30 days (companyfacts change quarterly)
+  fmp:                            # Financial Modeling Prep — statements gap-filler
+    enabled: true
+    api_key: ${FMP_API_KEY}       # inactive until set (free tier: 250 calls/day)
+    requests_per_sec: 4
+    # FMP costs 4 calls per COLD ticker (3 statements + profile). Cap cold
+    # tickers per run so a full enrich stays under the 250/day free tier
+    # (55 x 4 = 220). Warm tickers (30-day statement cache) don't count, so
+    # steady-state weekly runs are far cheaper. Finalists are submitted before
+    # rescues, so they get first claim on the budget.
+    max_fetches_per_run: 55
+  finnhub:                        # Finnhub — price/market-cap/shares cross-check
+    enabled: true
+    api_key: ${FINNHUB_API_KEY}   # inactive until set (free tier: 60 calls/min)
+    requests_per_sec: 1
+  merge:
+    enabled: true
+    enrich_top_n: 50              # validate this many top finalists
+    rescue_gate_failures: true    # gap-fill names yfinance returned incomplete
+    rescue_limit: 150
+    divergence_pct_flag: 5.0      # default tolerance — used for filing figures
+    # Per-field tolerance overrides. Filing figures (revenue/net income) stay at
+    # the strict 5% default; market cap & price legitimately differ across
+    # sources (real-time vs last close, different share-count basis), so they're
+    # looser to avoid false conflict flags / demotions.
+    divergence_pct_by_field:
+      market_cap: 10.0
+      price: 10.0
+      shares_outstanding: 10.0
+
+# Throttle control for yfinance/Yahoo. Yahoo rate-limits hard and, worse, often
+# answers a throttled request with a SILENT empty frame (no error) — which is
+# how cash-flow/valuation data was going missing. These knobs trade runtime for
+# completeness; tuned here to prioritize complete data over speed.
+#   - max_workers:     concurrent fetch threads (lower = gentler on Yahoo).
+#   - requests_per_sec: global ceiling shared across ALL threads (0 = unlimited).
+#   - blank_retries:   extra re-pulls when a statement comes back empty.
+#   - yf_internal_retries: yfinance's own per-request HTTP retry (set_config).
+# A full cold run of the all-US universe at these settings can take a few hours;
+# warm runs (cache hits) are fast. Raise the rate / workers to speed up.
+throttle:
+  max_workers: 3
+  requests_per_sec: 3.0
+  blank_retries: 2
+  blank_retry_backoff_sec: 1.5
+  yf_internal_retries: 3
 
 # Universe files (relative to repo root). All files are merged + deduped.
 # Comment out lines to narrow the universe.

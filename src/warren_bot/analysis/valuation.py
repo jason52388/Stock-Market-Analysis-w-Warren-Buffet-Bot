@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..data.fetcher import TickerSnapshot
+from ..data.schema import ALIASES
 from .ratios import _CFO, _CAPEX, _DEPRECIATION, _NET_INCOME, _SHARES
+
+_EPS = ALIASES["Diluted EPS"]   # ["Diluted EPS", "Basic EPS", "EPS"]
 from .statement_utils import (
     aligned,
     dividend_yield_pct,
@@ -78,7 +81,7 @@ def _historical_pe_ratio(snap: TickerSnapshot, current_pe: float | None,
     if hist is None or hist.empty or "Close" not in hist:
         return None
     # Per-year EPS: prefer reported diluted/basic EPS, else NI / shares.
-    eps_row = row(snap.income, ["Diluted EPS", "Basic EPS", "EPS"])
+    eps_row = row(snap.income, _EPS)
     f = frame(eps=eps_row)
     if f.empty:
         f = aligned(frame(ni=row(snap.income, _NET_INCOME),
